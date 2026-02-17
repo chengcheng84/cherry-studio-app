@@ -41,12 +41,16 @@ export const MentionButton: React.FC<MentionButtonProps> = ({ mentions, setMenti
   }
 
   const handlePress = () => {
+    // 先保存当前滚动位置
     Keyboard.dismiss()
-    presentModelSheet({
-      mentions,
-      setMentions: onMentionChange,
-      multiple: true
-    })
+    // 延迟弹出 Sheet，让键盘收起动画完成
+    setTimeout(() => {
+      presentModelSheet({
+        mentions,
+        setMentions: onMentionChange,
+        multiple: true
+      })
+    }, 100)
   }
 
   const renderEmptyState = () => <AtSign size={DISPLAY_CONSTANTS.ICON_SIZE} />

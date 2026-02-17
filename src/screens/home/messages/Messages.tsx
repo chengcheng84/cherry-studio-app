@@ -4,9 +4,9 @@ import { BlurView } from 'expo-blur'
 import { SymbolView } from 'expo-symbols'
 import { MotiView } from 'moti'
 import type { FC } from 'react'
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native'
-import { Platform, StyleSheet, View } from 'react-native'
+import { Keyboard, Platform, StyleSheet, View } from 'react-native'
 import Animated, { useAnimatedProps, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSelector } from 'react-redux'
 
@@ -17,6 +17,7 @@ import { ArrowDown } from '@/componentsV2/icons'
 import { useInitialScrollToEnd } from '@/hooks/chat/useInitialScrollToEnd'
 import { useTopicBlocks } from '@/hooks/useMessageBlocks'
 import { useMessages } from '@/hooks/useMessages'
+import { ScrollLockProvider, useScrollLock } from '@/hooks/useScrollLock'
 import { useTheme } from '@/hooks/useTheme'
 import type { RootState } from '@/store'
 import type { Assistant, Topic } from '@/types/assistant'
@@ -34,7 +35,7 @@ interface MessagesProps {
   topic: Topic
 }
 
-const Messages: FC<MessagesProps> = ({ assistant, topic }) => {
+const MessagesContent: FC<MessagesProps> = ({ assistant, topic }) => {
   const { messages } = useMessages(topic.id)
   const { messageBlocks } = useTopicBlocks(topic.id)
   const { isDark } = useTheme()
@@ -42,6 +43,71 @@ const Messages: FC<MessagesProps> = ({ assistant, topic }) => {
   const legendListRef = useRef<LegendListRef>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [isAtBottom, setIsAtBottom] = useState(false)
+  const { isLocked, savedScrollOffset, scrollAttempts } = useScrollLock()
+
+  // 用于检测真正的固定位置（调试用）
+  const detectedFixedPosition = useRef<number | null>(null)
+  const fixedPositionLogs = useRef<number[]>([])
+
+  // 跟踪键盘状态，用于检测键盘收起导致的滚动
+  const [keyboardVisible, setKeyboardVisible] = useState(false)
+
+  useEffect(() => {
+    const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', () => {
+      setKeyboardVisible(true)
+    })
+    const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardVisible(false)
+    })
+
+    return () => {
+      keyboardDidShowListener.remove()
+      keyboardDidHideListener.remove()
+    }
+  }, [])
+
+  // 控制 maintainScrollAtEnd 的状态
+  const [maintainAtEnd, setMaintainAtEnd] = useState(true)
+
+  // 监听锁定状态，临时禁用 maintainScrollAtEnd
+  useEffect(() => {
+    if (isLocked) {
+      // 锁定时禁用
+      setMaintainAtEnd(false)
+    } else {
+      // 解锁时延迟恢复，给菜单稳定时间
+      const timer = setTimeout(() => {
+        setMaintainAtEnd(true)
+      }, 300)
+      return () => clearTimeout(timer)
+    }
+  }, [isLocked])
+
+  // 关键：锁定后立即禁用 scrollEnabled，从根本上阻止滚动
+  const scrollEnabled = !isLocked
+
+  // 调试：输出检测到的固定位置
+  useEffect(() => {
+    if (detectedFixedPosition.current !== null) {
+      console.log('[调试] 检测到的固定位置:', detectedFixedPosition.current)
+      console.log('[调试] 固定位置记录:', fixedPositionLogs.current)
+    }
+  }, [isLocked])
+
+  // 关键：使用 useLayoutEffect 在布局绘制前立即恢复滚动位置（防止闪动）
+  useLayoutEffect(() => {
+    if (isLocked && legendListRef.current && savedScrollOffset.current > 0) {
+      console.log('[useLayoutEffect] 锁定触发，立即恢复滚动位置到:', savedScrollOffset.current)
+      // 立即恢复，不使用动画
+      legendListRef.current?.scrollToOffset({
+        offset: savedScrollOffset.current,
+        animated: false
+      })
+    }
+  }, [isLocked])
+
+  // 持续监听滚动，长按期间任何偏移都立即恢复（防止长按期间持续滚动）
+  const lastRestoredOffset = useRef<number>(0)
 
   // Editing state
   const editingMessage = useSelector((state: RootState) => state.runtime.editingMessage)
@@ -117,19 +183,93 @@ const Messages: FC<MessagesProps> = ({ assistant, topic }) => {
     scrollToBottom()
   }
 
+  // 处理布局变化 - 在布局阶段就阻止滚动（比 onScroll 更早）
+  const handleLayout = useCallback(() => {
+    if (isLocked && legendListRef.current && savedScrollOffset.current > 0) {
+      console.log('[调试] onLayout: 检测到布局变化，立即恢复滚动位置到:', savedScrollOffset.current)
+      // 使用 requestAnimationFrame 确保在下一帧渲染前恢复
+      requestAnimationFrame(() => {
+        legendListRef.current?.scrollToOffset({
+          offset: savedScrollOffset.current,
+          animated: false
+        })
+      })
+    }
+  }, [isLocked])
+
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
     const threshold = 100
     const edgeThreshold = 10
+    const currentY = contentOffset.y
 
     // 检测是否在底部
-    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y
+    const distanceFromBottom = contentSize.height - layoutMeasurement.height - currentY
     setIsAtBottom(distanceFromBottom <= edgeThreshold)
     setShowScrollButton(distanceFromBottom > threshold)
+
+    // 未锁定时持续保存滚动位置
+    if (!isLocked) {
+      savedScrollOffset.current = currentY
+      lastRestoredOffset.current = currentY
+    }
+
+    // 键盘收起时检测滚动，如果是键盘收起导致的，立即恢复
+    if (!keyboardVisible && savedScrollOffset.current > 0) {
+      const scrollDiff = Math.abs(currentY - savedScrollOffset.current)
+      // 键盘收起导致的滚动通常较大，恢复位置
+      if (scrollDiff > 100 && scrollDiff < 500) {
+        console.log('[handleScroll] 检测到键盘收起导致的滚动，恢复:', currentY, '→', savedScrollOffset.current)
+        legendListRef.current?.scrollToOffset({
+          offset: savedScrollOffset.current,
+          animated: false
+        })
+        return
+      }
+    }
+
+    // 锁定时检测滚动行为
+    if (isLocked) {
+      // 记录每次锁定时的滚动位置
+      console.log(`[调试] 锁定时滚动 - 时间：${Date.now()}, 位置：${currentY}, 保存位置：${savedScrollOffset.current}`)
+
+      // 检测是否发生了不需要的滚动（与上次恢复位置相比）
+      const offsetFromLastRestored = Math.abs(currentY - lastRestoredOffset.current)
+
+      // 如果偏离了恢复位置超过阈值，立即恢复
+      if (offsetFromLastRestored > 50 && savedScrollOffset.current > 0) {
+        console.log('[handleScroll] 检测到偏移，立即恢复:', currentY, '→', savedScrollOffset.current)
+
+        // 立即恢复，不使用动画
+        legendListRef.current?.scrollToOffset({
+          offset: savedScrollOffset.current,
+          animated: false
+        })
+
+        // 更新最后恢复位置，避免重复触发
+        lastRestoredOffset.current = savedScrollOffset.current
+      }
+
+      // 动态检测偏移量：maintainScrollAtEnd 导致的偏移通常在 400-700px 之间
+      const offset = savedScrollOffset.current - currentY
+
+      // 如果偏移量在合理范围内（是 maintainScrollAtEnd 导致的）
+      if (offset > 300 && offset < 800) {
+        // 记录这个"固定偏移"
+        if (!detectedFixedPosition.current) {
+          detectedFixedPosition.current = currentY
+          fixedPositionLogs.current = [currentY]
+          console.log('[调试] 首次检测到固定位置:', currentY, '偏移量:', offset)
+        } else {
+          fixedPositionLogs.current.push(currentY)
+          console.log('[调试] 再次检测到固定位置:', currentY, '偏移量:', offset, '历史记录:', fixedPositionLogs.current)
+        }
+      }
+    }
   }
 
   return (
-    <View className="flex-1">
+    <View className="flex-1" collapsable={false}>
       <LegendList
         ref={legendListRef}
         showsVerticalScrollIndicator={false}
@@ -142,13 +282,15 @@ const Messages: FC<MessagesProps> = ({ assistant, topic }) => {
           flexGrow: 1
         }}
         onScroll={handleScroll}
+        onLayout={handleLayout}
         scrollEventThrottle={16}
         recycleItems
-        maintainScrollAtEnd
-        maintainScrollAtEndThreshold={0.1}
-        keyboardShouldPersistTaps="never"
+        maintainScrollAtEnd={maintainAtEnd}
+        maintainScrollAtEndThreshold={0.01}
+        keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         ListEmptyComponent={<WelcomeContent />}
+        scrollEnabled={!isLocked}
       />
       <GradientBlurEdge visible={!isAtBottom && groupedMessages.length > 0} />
       <AnimatedBlurView
@@ -194,5 +336,13 @@ const styles = StyleSheet.create({
     bottom: 0
   }
 })
+
+const Messages: FC<MessagesProps> = props => {
+  return (
+    <ScrollLockProvider>
+      <MessagesContent {...props} />
+    </ScrollLockProvider>
+  )
+}
 
 export default Messages

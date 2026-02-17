@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import React from 'react'
+import { Pressable, View } from 'react-native'
 
 import { SelectableText } from './SelectableText'
 
