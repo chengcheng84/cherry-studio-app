@@ -104,6 +104,7 @@
     "babel-plugin-react-compiler": "^1.0.0",
     "buffer": "^6.0.3",
     "burnt": "^0.13.0",
+    "clarinet": "^0.12.6",
     "crypto-es": "^3.1.2",
     "dayjs": "^1.11.19",
     "dompurify": "^3.3.1",

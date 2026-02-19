@@ -8,8 +8,10 @@ import {
   websearchProviderDatabase
 } from '@database'
 import type { Dispatch } from '@reduxjs/toolkit'
+import { parser as createParser } from 'clarinet'
 import dayjs from 'dayjs'
 import { Directory, File, Paths } from 'expo-file-system'
+import * as FileSystem from 'expo-file-system/legacy'
 import { unzip, zip } from 'react-native-zip-archive'
 
 import { getSystemAssistants } from '@/config/assistants'
@@ -31,6 +33,11 @@ import { resetAppInitializationState, runAppDataMigrations } from './AppInitiali
 import { assistantService } from './AssistantService'
 import { providerService } from './ProviderService'
 import { topicService } from './TopicService'
+
+// 流式读取阈值: 5MB
+const STREAM_THRESHOLD = 5 * 1024 * 1024
+// 旧解析器最大支持文件大小: 200MB
+const LEGACY_MAX_SIZE = 200 * 1024 * 1024
 const logger = loggerService.withContext('Backup Service')
 
 export type RestoreStepId = 'clear_data' | 'receive_file' | 'restore_settings' | 'restore_messages'
@@ -44,6 +51,262 @@ export type ProgressUpdate = {
 }
 
 type OnProgressCallback = (update: ProgressUpdate) => void
+
+/**
+ * 流式 JSON 解析器：避免大文件导致的内存溢出
+ * 使用 clarinet SAX 解析器逐步解析 JSON，而不是一次性加载到内存
+ */
+async function parseBackupDataStreaming(
+  file: File,
+  onProgress: (stage: string, details?: string) => void
+): Promise<{
+  reduxData: ExportReduxData
+  indexedData: ExportIndexedData
+  appInitializationVersion?: number
+}> {
+  // 初始化数据存储
+  let appInitializationVersion: number | undefined
+  let localStorageData: any = {}
+  let reduxData: ExportReduxData | undefined
+  
+  // 流式处理数组
+  const topics: Topic[] = []
+  const messages: Message[] = []
+  const messageBlocks: any[] = []
+  const settings: any[] = []
+  
+  // 处理状态
+  let parsingTarget = ''
+  let currentArray: any[] | null = null
+  let arrayItemCount = 0
+  
+  // 处理大value的阈值
+  const LARGE_VALUE_THRESHOLD = 10 * 1024 * 1024 // 10MB
+  
+  const parser = createParser()
+  let depth = 0
+  let currentKey = ''
+  const stack: any[] = []
+  
+  // 处理大文件的缓冲
+  let buffer = ''
+  let bufferSize = 0
+  const MAX_BUFFER_SIZE = 1024 * 1024 // 1MB buffer for parsing
+  
+  // 使用一个 Promise 来处理解析完成事件
+  return new Promise((resolve, reject) => {
+    parser.onerror = (error: Error) => {
+      logger.error('JSON streaming parse error:', error)
+      reject(error)
+    }
+    
+    parser.onopenobject = (key: string) => {
+      depth++
+      const newObj: any = {}
+      
+      if (depth === 1) {
+        if (key === 'localStorage') {
+          parsingTarget = 'localStorage'
+        } else if (key === 'indexedDB') {
+          parsingTarget = 'indexedDB'
+        } else {
+          parsingTarget = 'backup'
+        }
+      } else if (depth === 2 && parsingTarget === 'indexedDB') {
+        if (key === 'topics') {
+          currentArray = topics
+          parsingTarget = 'topics'
+          onProgress('parsing-topics', 'Starting...')
+        } else if (key === 'messages') {
+          currentArray = messages
+          parsingTarget = 'messages'
+          onProgress('parsing-messages', 'Starting...')
+        } else if (key === 'message_blocks') {
+          currentArray = messageBlocks
+          parsingTarget = 'message_blocks'
+          onProgress('parsing-message-blocks', 'Starting...')
+        } else if (key === 'settings') {
+          currentArray = settings
+          parsingTarget = 'settings'
+        }
+      } else if (depth === 3 && currentArray) {
+        // 数组元素对象，不需要特殊处理，stack 机制会处理
+      }
+      
+      if (stack.length > 0) {
+        const parent = stack[stack.length - 1]
+        if (Array.isArray(parent)) {
+          parent.push(newObj)
+        } else {
+          parent[currentKey] = newObj
+        }
+      }
+      
+      stack.push(newObj)
+      currentKey = key
+    }
+    
+    parser.oncloseobject = () => {
+      depth--
+      stack.pop()
+      
+      if (depth === 0) {
+        // 解析完成
+        onProgress('completed', 'JSON parsing finished')
+        
+        try {
+          // 解析 Redux 数据
+          const persistDataString = localStorageData['persist:cherry-studio']
+          if (persistDataString === undefined) {
+            const availableKeys = Object.keys(localStorageData)
+            throw new Error(`Missing 'persist:cherry-studio' in localStorage. Available keys: ${availableKeys.join(', ')}`)
+          }
+          const rawReduxData = JSON.parse(persistDataString)
+          
+          reduxData = {
+            assistants: JSON.parse(rawReduxData.assistants),
+            llm: JSON.parse(rawReduxData.llm),
+            websearch: JSON.parse(rawReduxData.websearch),
+            settings: JSON.parse(rawReduxData.settings),
+            mcp: rawReduxData.mcp ? JSON.parse(rawReduxData.mcp) : undefined
+          }
+          
+          // 构建最终结果
+          const indexedData: ExportIndexedData = {
+            topics,
+            messages,
+            message_blocks: messageBlocks,
+            settings
+          }
+          
+          logger.info('Streaming parse completed successfully')
+          logger.info(`Extracted ${messages.length} messages from ${topics.length} topics`)
+          
+          resolve({
+            reduxData: reduxData!,
+            indexedData,
+            appInitializationVersion
+          })
+        } catch (error) {
+          logger.error('Error in final processing:', error)
+          reject(error)
+        }
+      }
+    }
+    
+    parser.onopenarray = () => {
+      depth++
+      arrayItemCount = 0
+    }
+    
+    parser.onclosearray = () => {
+      depth--
+      if (currentArray) {
+        onProgress(`parsed-${parsingTarget}`, `Total: ${arrayItemCount} items`)
+        currentArray = null
+      }
+    }
+    
+    parser.onkey = (key: string) => {
+      currentKey = key
+      // 在根对象层级（depth=1）更新 parsingTarget
+      if (depth === 1) {
+        if (key === 'localStorage') {
+          parsingTarget = 'localStorage'
+        } else if (key === 'indexedDB') {
+          parsingTarget = 'indexedDB'
+        }
+      }
+    }
+    
+    parser.onvalue = (value: any) => {
+      // 检查是否是大value
+      if (typeof value === 'string' && value.length > LARGE_VALUE_THRESHOLD) {
+        logger.warn(`Large value for key: ${currentKey}, size: ${(value.length / 1024 / 1024).toFixed(2)}MB`)
+        value = `[LARGE_VALUE_SKIPPED: ${value.length} bytes]`
+      }
+      
+      if (parsingTarget === 'localStorage' && depth === 2) {
+        localStorageData[currentKey] = value
+      } else if (parsingTarget === 'indexedDB' && depth === 2) {
+        if (currentKey === 'app_initialization_version') {
+          appInitializationVersion = value
+        }
+      } else if (currentArray && depth >= 3) {
+        currentArray.push(value)
+        arrayItemCount++
+        
+        if (arrayItemCount % 1000 === 0) {
+          onProgress(`parsing-${parsingTarget}`, `Progress: ${arrayItemCount} items`)
+        }
+      }
+    }
+    
+    // 开始读取文件
+    // cast to any to avoid type mismatch between different onProgress signatures
+    ;(onProgress as any)('reading', `Starting to read ${(file.size / 1024 / 1024).toFixed(2)}MB file...`)
+    
+    // 使用异步 IIFE 来处理文件读取
+    ;(async () => {
+      try {
+        if (file.size <= STREAM_THRESHOLD) {
+          const content = await file.text()
+          onProgress('parsing', 'Parsing JSON...')
+          parser.write(content)
+          parser.close()
+        } else {
+          const chunkSize = 512 * 1024 // 512KB
+          let position = 0
+          let totalRead = 0
+          
+          while (position < file.size) {
+            const remaining = file.size - position
+            const currentChunkSize = Math.min(chunkSize, remaining)
+            
+            const chunk = await FileSystem.readAsStringAsync(file.uri, {
+              encoding: FileSystem.EncodingType.UTF8,
+              position,
+              length: currentChunkSize
+            })
+            
+            buffer += chunk
+            bufferSize += chunk.length
+            
+            if (bufferSize >= MAX_BUFFER_SIZE || position + currentChunkSize >= file.size) {
+              parser.write(buffer)
+              buffer = ''
+              bufferSize = 0
+            }
+            
+            totalRead += currentChunkSize
+            position += currentChunkSize
+            
+            if (totalRead % (10 * 1024 * 1024) === 0 || position >= file.size) {
+              onProgress('reading-parsing', `Processed ${(totalRead / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`)
+            }
+          }
+          
+          parser.close()
+        }
+      } catch (error) {
+        reject(error)
+      }
+    })()
+  })
+}
+
+async function parseWithLegacyParser(file: File, _onProgress: OnProgressCallback): Promise<{
+  reduxData: ExportReduxData
+  indexedData: ExportIndexedData
+  appInitializationVersion?: number
+}> {
+  // 如果文件过大，旧解析器会内存溢出，直接抛出错误
+  if (file.size > LEGACY_MAX_SIZE) {
+    throw new Error(`File too large (${(file.size / 1024 / 1024).toFixed(2)}MB) for legacy parser. Maximum size is ${(LEGACY_MAX_SIZE / 1024 / 1024).toFixed(2)}MB.`)
+  }
+  const fileContent = await file.text()
+  return transformBackupData(fileContent)
+}
 
 async function restoreIndexedDbData(data: ExportIndexedData, onProgress: OnProgressCallback, _dispatch: Dispatch) {
   onProgress({ step: 'restore_messages', status: 'in_progress' })
@@ -244,16 +507,25 @@ export async function restore(
     const dataFile = new File(extractedDirPath, 'data.json')
 
     // TODO: 长期方案 - 重构备份格式为分文件存储，避免读取大 JSON 文件
-    // 当前依赖 android:largeHeap="true" 来处理大文件（>100MB）
+    // 当前依赖流式JSON 来处理大文件（>100MB）
     logger.info('Starting to read backup file, size:', dataFile.size, 'bytes')
-    let fileContent = await dataFile.text()
-
-    logger.info('Parsing and transforming backup data...')
-    let parsedData = transformBackupData(fileContent)
-
-    // 立即释放原始文件内容
-    // @ts-ignore - fileContent 不再需要
-    fileContent = null
+    logger.info(`File size ${(dataFile.size / 1024 / 1024).toFixed(2)}MB, using streaming parser`)
+    
+    let parsedData: { reduxData: ExportReduxData; indexedData: ExportIndexedData; appInitializationVersion?: number }
+    
+    try {
+      parsedData = await parseBackupDataStreaming(dataFile, (stage, details) => {
+        logger.info(`Streaming parse: ${stage}${details ? ` - ${details}` : ''}`)
+      })
+      
+      logger.info('Streaming parse completed successfully')
+    } catch (parseError) {
+      logger.error('Streaming parse failed, falling back to legacy parser:', parseError)
+      
+      // 回退到旧解析器（用于兼容）
+      onProgress({ step: 'restore_messages', status: 'in_progress', error: 'Using legacy parser due to streaming parse error' })
+      parsedData = await parseWithLegacyParser(dataFile, onProgress)
+    }
 
     logger.info('Restoring Redux data...')
     await restoreReduxData(parsedData.reduxData, onProgress, dispatch)

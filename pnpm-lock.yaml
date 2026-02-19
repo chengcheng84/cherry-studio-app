@@ -202,6 +202,9 @@ importers:
       burnt:
         specifier: ^0.13.0
         version: 0.13.0(expo@54.0.30(@babel/core@7.28.5)(react-native-webview@13.15.0(react-native@0.81.4(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.4(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-dom@19.1.0(react@19.1.0))(react-native@0.81.4(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
+      clarinet:
+        specifier: ^0.12.6
+        version: 0.12.6
       crypto-es:
         specifier: ^3.1.2
         version: 3.1.2
@@ -14946,6 +14949,8 @@ snapshots:
   ci-info@3.9.0: {}
 
   cjs-module-lexer@1.4.3: {}
+
+  clarinet@0.12.6: {}
 
   cli-cursor@2.1.0:
     dependencies:
