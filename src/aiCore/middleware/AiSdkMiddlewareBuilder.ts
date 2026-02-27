@@ -1,19 +1,21 @@
 import type { WebSearchPluginConfig } from '@cherrystudio/ai-core/built-in/plugins'
+import { loggerService } from '@logger'
+import { isAnthropicModel, isGemini3Model, isSupportedThinkingTokenQwenModel } from '@renderer/config/models'
+import type { McpMode, MCPTool } from '@renderer/types'
+import { type Assistant, type Message, type Model, type Provider, SystemProviderIds } from '@renderer/types'
+import type { Chunk } from '@renderer/types/chunk'
+import { isOllamaProvider, isSupportEnableThinkingProvider } from '@renderer/utils/provider'
 import type { LanguageModelMiddleware } from 'ai'
 import { extractReasoningMiddleware, simulateStreamingMiddleware } from 'ai'
 
-import { isSupportedThinkingTokenQwenModel } from '@/config/models'
-import { isSupportEnableThinkingProvider } from '@/config/providers'
-import { loggerService } from '@/services/LoggerService'
-import type { Assistant, Model, Provider } from '@/types/assistant'
-import type { Chunk } from '@/types/chunk'
-import type { Message } from '@/types/message'
-import type { MCPTool } from '@/types/tool'
-
+import { getAiSdkProviderId } from '../provider/factory'
 import { isOpenRouterGeminiGenerateImageModel } from '../utils/image'
+import { anthropicCacheMiddleware } from './anthropicCacheMiddleware'
 import { noThinkMiddleware } from './noThinkMiddleware'
 import { openrouterGenerateImageMiddleware } from './openrouterGenerateImageMiddleware'
+import { openrouterReasoningMiddleware } from './openrouterReasoningMiddleware'
 import { qwenThinkingMiddleware } from './qwenThinkingMiddleware'
+import { skipGeminiThoughtSignatureMiddleware } from './skipGeminiThoughtSignatureMiddleware'
 
 const logger = loggerService.withContext('AiSdkMiddlewareBuilder')
 
@@ -33,10 +35,11 @@ export interface AiSdkMiddlewareConfig {
   isSupportedToolUse: boolean
   // image generation endpoint
   isImageGenerationEndpoint: boolean
-  // 是否开启网络搜索
+  // 是否开启内置搜索
   enableWebSearch: boolean
   enableGenerateImage: boolean
   enableUrlContext: boolean
+  mcpMode?: McpMode
   mcpTools?: MCPTool[]
   uiMessages?: Message[]
   // 内置搜索配置
@@ -72,7 +75,7 @@ export class AiSdkMiddlewareBuilder {
    * 在指定位置插入中间件
    */
   public insertAfter(targetName: string, middleware: NamedAiSdkMiddleware): this {
-    const index = this.middlewares.findIndex(m => m.name === targetName)
+    const index = this.middlewares.findIndex((m) => m.name === targetName)
     if (index !== -1) {
       this.middlewares.splice(index + 1, 0, middleware)
     } else {
@@ -85,14 +88,14 @@ export class AiSdkMiddlewareBuilder {
    * 检查是否包含指定名称的中间件
    */
   public has(name: string): boolean {
-    return this.middlewares.some(m => m.name === name)
+    return this.middlewares.some((m) => m.name === name)
   }
 
   /**
    * 移除指定名称的中间件
    */
   public remove(name: string): this {
-    this.middlewares = this.middlewares.filter(m => m.name !== name)
+    this.middlewares = this.middlewares.filter((m) => m.name !== name)
     return this
   }
 
@@ -100,7 +103,7 @@ export class AiSdkMiddlewareBuilder {
    * 构建最终的中间件数组
    */
   public build(): LanguageModelMiddleware[] {
-    return this.middlewares.map(m => m.middleware)
+    return this.middlewares.map((m) => m.middleware)
   }
 
   /**
@@ -132,15 +135,6 @@ export class AiSdkMiddlewareBuilder {
  */
 export function buildAiSdkMiddlewares(config: AiSdkMiddlewareConfig): LanguageModelMiddleware[] {
   const builder = new AiSdkMiddlewareBuilder()
-
-  // 0. 知识库强制调用中间件（必须在最前面，确保第一轮强制调用知识库）
-  // if (!isEmpty(config.assistant?.knowledge_bases?.map(base => base.id)) && config.knowledgeRecognition !== 'on') {
-  //   builder.add({
-  //     name: 'force-knowledge-first',
-  //     middleware: toolChoiceMiddleware('builtin_knowledge_search')
-  //   })
-  //   logger.debug('Added toolChoice middleware to force knowledge base search on first round')
-  // }
 
   // 1. 根据provider添加特定中间件
   if (config.provider) {
@@ -186,17 +180,21 @@ function addProviderSpecificMiddlewares(builder: AiSdkMiddlewareBuilder, config:
   // 根据不同provider添加特定中间件
   switch (config.provider.type) {
     case 'anthropic':
-      // Anthropic特定中间件
+      if (isAnthropicModel(config.model) && config.provider.anthropicCacheControl?.tokenThreshold) {
+        builder.add({
+          name: 'anthropic-cache',
+          middleware: anthropicCacheMiddleware(config.provider)
+        })
+      }
       break
     case 'openai':
     case 'azure-openai': {
-      if (config.enableReasoning) {
-        const tagName = getReasoningTagName(config.model?.id.toLowerCase())
-        builder.add({
-          name: 'thinking-tag-extraction',
-          middleware: extractReasoningMiddleware({ tagName })
-        })
-      }
+      // 就算这里不传参数也有可能调用推理
+      const tagName = getReasoningTagName(config.model?.id.toLowerCase())
+      builder.add({
+        name: 'thinking-tag-extraction',
+        middleware: extractReasoningMiddleware({ tagName })
+      })
       break
     }
     case 'gemini':
@@ -217,6 +215,14 @@ function addProviderSpecificMiddlewares(builder: AiSdkMiddlewareBuilder, config:
       middleware: noThinkMiddleware()
     })
   }
+
+  if (config.provider.id === SystemProviderIds.openrouter && config.enableReasoning) {
+    builder.add({
+      name: 'openrouter-reasoning-redaction',
+      middleware: openrouterReasoningMiddleware()
+    })
+    logger.debug('Added OpenRouter reasoning redaction middleware')
+  }
 }
 
 /**
@@ -229,6 +235,7 @@ function addModelSpecificMiddlewares(builder: AiSdkMiddlewareBuilder, config: Ai
   // Use /think or /no_think suffix to control thinking mode
   if (
     config.provider &&
+    !isOllamaProvider(config.provider) &&
     isSupportedThinkingTokenQwenModel(config.model) &&
     !isSupportEnableThinkingProvider(config.provider)
   ) {
@@ -247,6 +254,15 @@ function addModelSpecificMiddlewares(builder: AiSdkMiddlewareBuilder, config: Ai
       name: 'openrouter-gemini-image-generation',
       middleware: openrouterGenerateImageMiddleware()
     })
+  }
+
+  if (isGemini3Model(config.model)) {
+    const aiSdkId = getAiSdkProviderId(config.provider)
+    builder.add({
+      name: 'skip-gemini3-thought-signature',
+      middleware: skipGeminiThoughtSignatureMiddleware(aiSdkId)
+    })
+    logger.debug('Added skip Gemini3 thought signature middleware')
   }
 }
 

@@ -1,11 +1,10 @@
-import { File } from 'expo-file-system'
-import type OpenAI from 'openai'
-import { toFile } from 'openai/uploads'
-
-import { isDedicatedImageGenerationModel } from '@/config/models'
-import { defaultTimeout } from '@/constants'
-import { ChunkType } from '@/types/chunk'
-import { findImageBlocks, getMainTextContent } from '@/utils/messageUtils/find'
+import type OpenAI from '@cherrystudio/openai'
+import { toFile } from '@cherrystudio/openai/uploads'
+import { isDedicatedImageGenerationModel } from '@renderer/config/models'
+import FileManager from '@renderer/services/FileManager'
+import { ChunkType } from '@renderer/types/chunk'
+import { findImageBlocks, getMainTextContent } from '@renderer/utils/messageUtils/find'
+import { defaultTimeout } from '@shared/config/constant'
 
 import type { BaseApiClient } from '../../clients/BaseApiClient'
 import type { CompletionsParams, CompletionsResult, GenericChunk } from '../schemas'
@@ -15,12 +14,11 @@ export const MIDDLEWARE_NAME = 'ImageGenerationMiddleware'
 
 export const ImageGenerationMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (context: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     const { assistant, messages } = params
     const client = context.apiClientInstance as BaseApiClient<OpenAI>
     const signal = context._internal?.flowControl?.abortSignal
-
     if (!assistant.model || !isDedicatedImageGenerationModel(assistant.model) || typeof messages === 'string') {
       return next(context, params)
     }
@@ -35,43 +33,39 @@ export const ImageGenerationMiddleware: CompletionsMiddleware =
           }
 
           const sdk = await client.getSdkInstance()
-          const lastUserMessage = messages.findLast(m => m.role === 'user')
-          const lastAssistantMessage = messages.findLast(m => m.role === 'assistant')
+          const lastUserMessage = messages.findLast((m) => m.role === 'user')
+          const lastAssistantMessage = messages.findLast((m) => m.role === 'assistant')
 
           if (!lastUserMessage) {
             throw new Error('No user message found for image generation.')
           }
 
-          const prompt = await getMainTextContent(lastUserMessage)
+          const prompt = getMainTextContent(lastUserMessage)
           let imageFiles: Blob[] = []
 
           // Collect images from user message
-          const userImageBlocks = await findImageBlocks(lastUserMessage)
+          const userImageBlocks = findImageBlocks(lastUserMessage)
           const userImages = await Promise.all(
-            userImageBlocks.map(async block => {
+            userImageBlocks.map(async (block) => {
               if (!block.file) return null
-              const binaryData: Uint8Array = await new File(block.file.path).bytes()
-              const standardUint8Array = new Uint8Array(binaryData)
+              const binaryData: Uint8Array = await FileManager.readBinaryImage(block.file)
               const mimeType = `${block.file.type}/${block.file.ext.slice(1)}`
-              return await toFile(new Blob([standardUint8Array]), block.file.origin_name || 'image.png', {
-                type: mimeType
-              })
+              return await toFile(new Blob([binaryData]), block.file.origin_name || 'image.png', { type: mimeType })
             })
           )
           imageFiles = imageFiles.concat(userImages.filter(Boolean) as Blob[])
 
           // Collect images from last assistant message
           if (lastAssistantMessage) {
-            const assistantImageBlocks = await findImageBlocks(lastAssistantMessage)
+            const assistantImageBlocks = findImageBlocks(lastAssistantMessage)
             const assistantImages = await Promise.all(
-              assistantImageBlocks.map(async block => {
+              assistantImageBlocks.map(async (block) => {
                 const b64 = block.url?.replace(/^data:image\/\w+;base64,/, '')
                 if (!b64) return null
                 const binary = atob(b64)
                 const bytes = new Uint8Array(binary.length)
                 for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-                const standardUint8Array = new Uint8Array(bytes)
-                return await toFile(new Blob([standardUint8Array]), 'assistant_image.png', { type: 'image/png' })
+                return await toFile(new Blob([bytes]), 'assistant_image.png', { type: 'image/png' })
               })
             )
             imageFiles = imageFiles.concat(assistantImages.filter(Boolean) as Blob[])
@@ -84,6 +78,12 @@ export const ImageGenerationMiddleware: CompletionsMiddleware =
           const options = { signal, timeout: defaultTimeout }
 
           if (imageFiles.length > 0) {
+            const model = assistant.model
+            const provider = context.apiClientInstance.provider
+            // https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/dall-e?tabs=gpt-image-1#call-the-image-edit-api
+            if (model.id.toLowerCase().includes('gpt-image-1-mini') && provider.type === 'azure-openai') {
+              throw new Error('Azure OpenAI GPT-Image-1-Mini model does not support image editing.')
+            }
             response = await sdk.images.edit(
               {
                 model: assistant.model.id,
@@ -112,7 +112,6 @@ export const ImageGenerationMiddleware: CompletionsMiddleware =
               } else if (image.b64_json) {
                 acc.push(`data:image/png;base64,${image.b64_json}`)
               }
-
               return acc
             }, []) || []
 

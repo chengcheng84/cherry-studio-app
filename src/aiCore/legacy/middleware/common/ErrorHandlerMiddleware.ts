@@ -1,7 +1,8 @@
-import { isZhipuModel } from '@/config/models'
-import { loggerService } from '@/services/LoggerService'
-import { getProviderByIdSync } from '@/services/ProviderService'
-import type { Chunk } from '@/types/chunk'
+import { loggerService } from '@logger'
+import { isZhipuModel } from '@renderer/config/models'
+import { getStoreProviders } from '@renderer/hooks/useStore'
+import { getDefaultModel } from '@renderer/services/AssistantService'
+import type { Chunk } from '@renderer/types/chunk'
 
 import type { CompletionsParams, CompletionsResult } from '../schemas'
 import type { CompletionsContext } from '../types'
@@ -22,7 +23,7 @@ export const MIDDLEWARE_NAME = 'ErrorHandlerMiddleware'
  */
 export const ErrorHandlerMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params): Promise<CompletionsResult> => {
     const { shouldThrow } = params
 
@@ -66,7 +67,7 @@ export const ErrorHandlerMiddleware =
   }
 
 function handleError(error: any, params: CompletionsParams): any {
-  if (isZhipuModel(params.assistant.model) && error.status && !params.enableGenerateImage) {
+  if (isZhipuModel(params.assistant.model || getDefaultModel()) && error.status && !params.enableGenerateImage) {
     return handleZhipuError(error)
   }
 
@@ -87,7 +88,7 @@ function handleError(error: any, params: CompletionsParams): any {
  * 2. 绘画功能（enableGenerateImage为true）使用通用错误处理
  */
 function handleZhipuError(error: any): any {
-  const provider = getProviderByIdSync('zhipu')
+  const provider = getStoreProviders().find((p) => p.id === 'zhipu')
   const logger = loggerService.withContext('handleZhipuError')
 
   // 定义错误模式映射

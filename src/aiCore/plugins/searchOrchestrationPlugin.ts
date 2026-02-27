@@ -7,33 +7,36 @@
  * 3. onRequestEnd: 自动记忆存储
  */
 import { type AiRequestContext, definePlugin } from '@cherrystudio/ai-core'
+import { loggerService } from '@logger'
 // import { generateObject } from '@cherrystudio/ai-core'
-import { generateText, type LanguageModel, type ModelMessage } from 'ai'
-
 import {
   SEARCH_SUMMARY_PROMPT,
   SEARCH_SUMMARY_PROMPT_KNOWLEDGE_ONLY,
   SEARCH_SUMMARY_PROMPT_WEB_ONLY
-} from '@/config/prompts'
-import { getDefaultModel } from '@/services/AssistantService'
-import { loggerService } from '@/services/LoggerService'
-import { getProviderByModel } from '@/services/ProviderService'
-import type { Assistant } from '@/types/assistant'
-import type { ExtractResults } from '@/types/extract'
-import { extractInfoFromXML } from '@/utils/extract'
-import { hasApiKey } from '@/utils/providerUtils'
+} from '@renderer/config/prompts'
+import { getDefaultModel, getProviderByModel } from '@renderer/services/AssistantService'
+import store from '@renderer/store'
+import { selectCurrentUserId, selectGlobalMemoryEnabled, selectMemoryConfig } from '@renderer/store/memory'
+import type { Assistant } from '@renderer/types'
+import type { ExtractResults } from '@renderer/utils/extract'
+import { extractInfoFromXML } from '@renderer/utils/extract'
+import type { LanguageModel, ModelMessage } from 'ai'
+import { generateText } from 'ai'
+import { isEmpty } from 'lodash'
 
+import { MemoryProcessor } from '../../services/MemoryProcessor'
+import { knowledgeSearchTool } from '../tools/KnowledgeSearchTool'
+import { memorySearchTool } from '../tools/MemorySearchTool'
 import { webSearchToolWithPreExtractedKeywords } from '../tools/WebSearchTool'
 
 const logger = loggerService.withContext('SearchOrchestrationPlugin')
 
-const getMessageContent = (message: ModelMessage) => {
+export const getMessageContent = (message: ModelMessage) => {
   if (typeof message.content === 'string') return message.content
   return message.content.reduce((acc, part) => {
     if (part.type === 'text') {
       return acc + part.text + '\n'
     }
-
     return acc
   }, '')
 }
@@ -115,32 +118,11 @@ async function analyzeSearchIntent(
   const model = assistant.model || getDefaultModel()
   const provider = getProviderByModel(model)
 
-  if (!provider) {
-    logger.error('Provider not found for model', {
-      modelId: model.id,
-      modelName: model.name,
-      providerId: model.provider,
-      assistantId: assistant.id,
-      assistantName: assistant.name
-    })
+  if (!provider || isEmpty(provider.apiKey)) {
+    logger.error('Provider not found or missing API key')
     return getFallbackResult()
   }
-
-  if (!hasApiKey(provider)) {
-    logger.error('Provider API key is missing', {
-      modelId: model.id,
-      modelName: model.name,
-      providerId: provider.id,
-      providerName: provider.name,
-      assistantId: assistant.id,
-      assistantName: assistant.name
-    })
-    return getFallbackResult()
-  }
-
-  // console.log('formattedPrompt', schema)
   try {
-    context.isAnalyzing = true
     logger.info('Starting intent analysis generateText call', {
       modelId: model.id,
       topicId: options.topicId,
@@ -187,6 +169,71 @@ async function analyzeSearchIntent(
 }
 
 /**
+ * 🧠 记忆存储函数 - 基于注释代码中的 processConversationMemory
+ */
+async function storeConversationMemory(
+  messages: ModelMessage[],
+  assistant: Assistant,
+  context: AiRequestContext
+): Promise<void> {
+  const globalMemoryEnabled = selectGlobalMemoryEnabled(store.getState())
+
+  if (!globalMemoryEnabled || !assistant.enableMemory) {
+    return
+  }
+
+  try {
+    const memoryConfig = selectMemoryConfig(store.getState())
+
+    // 转换消息为记忆处理器期望的格式
+    const conversationMessages = messages
+      .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
+      .map((msg) => ({
+        role: msg.role,
+        content: getMessageContent(msg) || ''
+      }))
+      .filter((msg) => msg.content.trim().length > 0)
+    logger.debug('conversationMessages', conversationMessages)
+    if (conversationMessages.length < 2) {
+      logger.info('Need at least a user message and assistant response for memory processing')
+      return
+    }
+
+    const currentUserId = selectCurrentUserId(store.getState())
+    // const lastUserMessage = messages.findLast((m) => m.role === 'user')
+
+    const processorConfig = MemoryProcessor.getProcessorConfig(
+      memoryConfig,
+      assistant.id,
+      currentUserId,
+      context.requestId
+    )
+
+    logger.info('Processing conversation memory...', { messageCount: conversationMessages.length })
+
+    // 后台处理对话记忆（不阻塞 UI）
+    const memoryProcessor = new MemoryProcessor()
+    memoryProcessor
+      .processConversation(conversationMessages, processorConfig)
+      .then((result) => {
+        logger.info('Memory processing completed:', result)
+        if (result.facts?.length > 0) {
+          logger.info('Extracted facts from conversation:', result.facts)
+          logger.info('Memory operations performed:', result.operations)
+        } else {
+          logger.info('No facts extracted from conversation')
+        }
+      })
+      .catch((error) => {
+        logger.error('Background memory processing failed:', error as Error)
+      })
+  } catch (error) {
+    logger.error('Error in conversation memory processing:', error as Error)
+    // 不抛出错误，避免影响主流程
+  }
+}
+
+/**
  * 🎯 搜索编排插件
  */
 export const searchOrchestrationPlugin = (assistant: Assistant, topicId: string) => {
@@ -197,17 +244,15 @@ export const searchOrchestrationPlugin = (assistant: Assistant, topicId: string)
   return definePlugin({
     name: 'search-orchestration',
     enforce: 'pre', // 确保在其他插件之前执行
-
     /**
      * 🔍 Step 1: 意图识别阶段
      */
     onRequestStart: async (context: AiRequestContext) => {
       // 没开启任何搜索则不进行意图分析
-      if (!assistant.webSearchProviderId) return
+      if (!(assistant.webSearchProviderId || assistant.knowledge_bases?.length || assistant.enableMemory)) return
 
       try {
         const messages = context.originalParams.messages
-
         if (!messages || messages.length === 0) {
           return
         }
@@ -218,14 +263,21 @@ export const searchOrchestrationPlugin = (assistant: Assistant, topicId: string)
         // 存储用户消息用于后续记忆存储
         userMessages[context.requestId] = lastUserMessage
 
+        // 判断是否需要各种搜索
+        const knowledgeBaseIds = assistant.knowledge_bases?.map((base) => base.id)
+        const hasKnowledgeBase = !isEmpty(knowledgeBaseIds)
+        const knowledgeRecognition = assistant.knowledgeRecognition || 'off'
+        const globalMemoryEnabled = selectGlobalMemoryEnabled(store.getState())
         const shouldWebSearch = !!assistant.webSearchProviderId
+        const shouldKnowledgeSearch = hasKnowledgeBase && knowledgeRecognition === 'on'
+        const shouldMemorySearch = globalMemoryEnabled && assistant.enableMemory
 
         // 执行意图分析
-        if (shouldWebSearch) {
+        if (shouldWebSearch || shouldKnowledgeSearch) {
           const analysisResult = await analyzeSearchIntent(lastUserMessage, assistant, {
             shouldWebSearch,
-            shouldKnowledgeSearch: false,
-            shouldMemorySearch: false,
+            shouldKnowledgeSearch,
+            shouldMemorySearch,
             lastAnswer: lastAssistantMessage,
             context,
             topicId
@@ -260,8 +312,8 @@ export const searchOrchestrationPlugin = (assistant: Assistant, topicId: string)
           params.tools = {}
         }
 
-        // 🌐 网络搜索工具配置 (排除 builtin，builtin 使用模型原生搜索能力)
-        if (analysisResult?.websearch && assistant.webSearchProviderId && assistant.webSearchProviderId !== 'builtin') {
+        // 🌐 网络搜索工具配置
+        if (analysisResult?.websearch && assistant.webSearchProviderId) {
           const needsSearch = analysisResult.websearch.question && analysisResult.websearch.question[0] !== 'not_needed'
 
           if (needsSearch) {
@@ -273,6 +325,38 @@ export const searchOrchestrationPlugin = (assistant: Assistant, topicId: string)
               context.requestId
             )
           }
+        }
+
+        // 📚 知识库搜索工具配置
+        const knowledgeBaseIds = assistant.knowledge_bases?.map((base) => base.id)
+        const hasKnowledgeBase = !isEmpty(knowledgeBaseIds)
+        const knowledgeRecognition = assistant.knowledgeRecognition || 'off'
+        const shouldKnowledgeSearch = hasKnowledgeBase && knowledgeRecognition === 'on'
+
+        if (shouldKnowledgeSearch) {
+          // on 模式：根据意图识别结果决定是否添加工具
+          const needsKnowledgeSearch =
+            analysisResult?.knowledge &&
+            analysisResult.knowledge.question &&
+            analysisResult.knowledge.question[0] !== 'not_needed'
+
+          if (needsKnowledgeSearch && analysisResult.knowledge) {
+            // logger.info('📚 Adding knowledge search tool (intent-based)')
+            const userMessage = userMessages[context.requestId]
+            params.tools['builtin_knowledge_search'] = knowledgeSearchTool(
+              assistant,
+              analysisResult.knowledge,
+              getMessageContent(userMessage),
+              topicId
+            )
+          }
+        }
+
+        // 🧠 记忆搜索工具配置
+        const globalMemoryEnabled = selectGlobalMemoryEnabled(store.getState())
+        if (globalMemoryEnabled && assistant.enableMemory) {
+          // logger.info('🧠 Adding memory search tool')
+          params.tools['builtin_memory_search'] = memorySearchTool()
         }
 
         // logger.info('🔧 Tools configured:', Object.keys(params.tools))
@@ -291,8 +375,13 @@ export const searchOrchestrationPlugin = (assistant: Assistant, topicId: string)
       // context.isAnalyzing = false
       // logger.info('context.isAnalyzing', context, result)
       // logger.info('💾 Starting memory storage...', context.requestId)
-
       try {
+        const messages = context.originalParams.messages
+
+        if (messages && assistant) {
+          await storeConversationMemory(messages, assistant, context)
+        }
+
         // 清理缓存
         delete intentAnalysisResults[context.requestId]
         delete userMessages[context.requestId]

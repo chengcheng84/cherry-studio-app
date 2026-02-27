@@ -3,19 +3,18 @@
  * 用于将 AI SDK 的 fullStream 转换为 Cherry Studio 的 chunk 格式
  */
 
+import { loggerService } from '@logger'
+import type { AISDKWebSearchResult, MCPTool, WebSearchResults } from '@renderer/types'
+import { WebSearchSource } from '@renderer/types'
+import type { Chunk } from '@renderer/types/chunk'
+import { ChunkType } from '@renderer/types/chunk'
+import { ProviderSpecificError } from '@renderer/types/provider-specific-error'
+import { formatErrorMessage } from '@renderer/utils/error'
+import { convertLinks, flushLinkConverterBuffer } from '@renderer/utils/linkConverter'
+import type { ClaudeCodeRawValue } from '@shared/agents/claudecode/types'
 import { AISDKError, type TextStreamPart, type ToolSet } from 'ai'
 
-import { loggerService } from '@/services/LoggerService'
-import type { Chunk } from '@/types/chunk'
-import { ChunkType } from '@/types/chunk'
-import { ProviderSpecificError } from '@/types/providerSpecificError'
-import type { MCPTool } from '@/types/tool'
-import type { AISDKWebSearchResult, WebSearchResults } from '@/types/websearch'
-import { WebSearchSource } from '@/types/websearch'
-import { formatErrorMessage } from '@/utils/error'
-import { convertLinks, flushLinkConverterBuffer } from '@/utils/linkConverter'
-
-import { ToolCallChunkHandler } from './handleTooCallChunk'
+import { ToolCallChunkHandler } from './handleToolCallChunk'
 
 const logger = loggerService.withContext('AiSdkToChunkAdapter')
 
@@ -85,8 +84,7 @@ export class AiSdkToChunkAdapter {
       text: '',
       reasoningContent: '',
       webSearchResults: [],
-      reasoningId: '',
-      thinkingMillsec: 0
+      reasoningId: ''
     }
     this.resetTimingState()
     this.responseStartTimestamp = Date.now()
@@ -116,16 +114,24 @@ export class AiSdkToChunkAdapter {
         // 转换并发送 chunk
         this.convertAndEmitChunk(value, final)
       }
-    } catch (error) {
-      // 捕获流读取异常并发送 ERROR chunk
-      logger.error('Stream reading error', error instanceof Error ? error : new Error(String(error)))
-      this.onChunk({
-        type: ChunkType.ERROR,
-        error: error instanceof Error ? error : new Error(String(error))
-      })
     } finally {
       reader.releaseLock()
       this.resetTimingState()
+    }
+  }
+
+  /**
+   * 如果有累积的思考内容，发送 THINKING_COMPLETE chunk 并清空
+   * @param final 包含 reasoningContent 的状态对象
+   * @returns 是否发送了 THINKING_COMPLETE chunk
+   */
+  private emitThinkingCompleteIfNeeded(final: { reasoningContent: string; [key: string]: any }) {
+    if (final.reasoningContent) {
+      this.onChunk({
+        type: ChunkType.THINKING_COMPLETE,
+        text: final.reasoningContent
+      })
+      final.reasoningContent = ''
     }
   }
 
@@ -135,18 +141,28 @@ export class AiSdkToChunkAdapter {
    */
   private convertAndEmitChunk(
     chunk: TextStreamPart<any>,
-    final: {
-      text: string
-      reasoningContent: string
-      webSearchResults: AISDKWebSearchResult[]
-      reasoningId: string
-      thinkingMillsec: number
-    }
+    final: { text: string; reasoningContent: string; webSearchResults: AISDKWebSearchResult[]; reasoningId: string }
   ) {
     logger.silly(`AI SDK chunk type: ${chunk.type}`, chunk)
     switch (chunk.type) {
+      case 'raw': {
+        const agentRawMessage = chunk.rawValue as ClaudeCodeRawValue
+        if (agentRawMessage.type === 'init' && agentRawMessage.session_id) {
+          this.onSessionUpdate?.(agentRawMessage.session_id)
+        } else if (agentRawMessage.type === 'compact' && agentRawMessage.session_id) {
+          this.onSessionUpdate?.(agentRawMessage.session_id)
+        }
+        this.onChunk({
+          type: ChunkType.RAW,
+          content: agentRawMessage
+        })
+        break
+      }
       // === 文本相关事件 ===
       case 'text-start':
+        // 如果有未完成的思考内容，先生成 THINKING_COMPLETE
+        // 这处理了某些提供商不发送 reasoning-end 事件的情况
+        this.emitThinkingCompleteIfNeeded(final)
         this.onChunk({
           type: ChunkType.TEXT_START
         })
@@ -206,31 +222,18 @@ export class AiSdkToChunkAdapter {
         })
         // }
         break
-      case 'reasoning-delta': {
+      case 'reasoning-delta':
         final.reasoningContent += chunk.text || ''
         if (chunk.text) {
           this.markFirstTokenIfNeeded()
         }
-        // 从插件 metadata 中提取思考时间
-        const thinking_millsec = (chunk.providerMetadata?.metadata as any)?.thinking_millsec
-        if (typeof thinking_millsec === 'number') {
-          final.thinkingMillsec = thinking_millsec
-        }
         this.onChunk({
           type: ChunkType.THINKING_DELTA,
-          text: final.reasoningContent || '',
-          thinking_millsec
+          text: final.reasoningContent || ''
         })
         break
-      }
       case 'reasoning-end':
-        this.onChunk({
-          type: ChunkType.THINKING_COMPLETE,
-          text: final.reasoningContent || '',
-          thinking_millsec: final.thinkingMillsec
-        })
-        final.reasoningContent = ''
-        final.thinkingMillsec = 0
+        this.emitThinkingCompleteIfNeeded(final)
         break
 
       // === 工具调用相关事件（原始 AI SDK 事件，如果没有被中间件处理） ===
@@ -397,14 +400,13 @@ export class AiSdkToChunkAdapter {
       case 'error':
         this.onChunk({
           type: ChunkType.ERROR,
-          error:
-            chunk.error instanceof AISDKError
-              ? chunk.error
-              : new ProviderSpecificError({
-                  message: formatErrorMessage(chunk.error),
-                  provider: 'unknown',
-                  cause: chunk.error
-                })
+          error: AISDKError.isInstance(chunk.error)
+            ? chunk.error
+            : new ProviderSpecificError({
+                message: formatErrorMessage(chunk.error),
+                provider: 'unknown',
+                cause: chunk.error
+              })
         })
         break
 

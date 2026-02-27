@@ -25,6 +25,7 @@ export function openrouterGenerateImageMiddleware(): LanguageModelMiddleware {
         ...transformedParams.providerOptions,
         openrouter: { ...transformedParams.providerOptions?.openrouter, modalities: ['image', 'text'] }
       }
+      transformedParams
 
       return transformedParams
     }

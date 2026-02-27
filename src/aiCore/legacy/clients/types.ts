@@ -1,8 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import type OpenAI from 'openai'
-
-import type { Assistant, Model, Provider } from '@/types/assistant'
-import type { MCPToolResponse, ToolCallResponse } from '@/types/mcp'
+import type OpenAI from '@cherrystudio/openai'
+import type { Assistant, MCPTool, MCPToolResponse, Model, ToolCallResponse } from '@renderer/types'
+import type { Provider } from '@renderer/types'
 import type {
   AnthropicSdkRawChunk,
   OpenAIResponseSdkRawChunk,
@@ -14,20 +13,10 @@ import type {
   SdkRawOutput,
   SdkTool,
   SdkToolCall
-} from '@/types/sdk'
-import type { MCPTool } from '@/types/tool'
+} from '@renderer/types/sdk'
 
 import type { CompletionsParams, GenericChunk } from '../middleware/schemas'
 import type { CompletionsContext } from '../middleware/types'
-
-/**
- * Transformer 接口，用于 TransformStream
- */
-export interface Transformer<I, O> {
-  start?: (controller: TransformStreamDefaultController<O>) => void | Promise<void>
-  transform?: (chunk: I, controller: TransformStreamDefaultController<O>) => void | Promise<void>
-  flush?: (controller: TransformStreamDefaultController<O>) => void | Promise<void>
-}
 
 /**
  * 原始流监听器接口
@@ -50,18 +39,16 @@ export interface OpenAIStreamListener extends RawStreamListener<OpenAISdkRawChun
 /**
  * OpenAI Response 专用的流监听器
  */
-export interface OpenAIResponseStreamListener<
-  TChunk extends OpenAIResponseSdkRawChunk = OpenAIResponseSdkRawChunk
-> extends RawStreamListener<TChunk> {
+export interface OpenAIResponseStreamListener<TChunk extends OpenAIResponseSdkRawChunk = OpenAIResponseSdkRawChunk>
+  extends RawStreamListener<TChunk> {
   onMessage?: (response: OpenAIResponseSdkRawOutput) => void
 }
 
 /**
  * Anthropic 专用的流监听器
  */
-export interface AnthropicStreamListener<
-  TChunk extends AnthropicSdkRawChunk = AnthropicSdkRawChunk
-> extends RawStreamListener<TChunk> {
+export interface AnthropicStreamListener<TChunk extends AnthropicSdkRawChunk = AnthropicSdkRawChunk>
+  extends RawStreamListener<TChunk> {
   onContentBlock?: (contentBlock: Anthropic.Messages.ContentBlock) => void
   onMessage?: (message: Anthropic.Messages.Message) => void
 }

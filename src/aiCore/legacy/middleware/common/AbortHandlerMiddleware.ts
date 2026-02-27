@@ -1,7 +1,7 @@
-import { loggerService } from '@/services/LoggerService'
-import type { Chunk, ErrorChunk } from '@/types/chunk'
-import { ChunkType } from '@/types/chunk'
-import { addAbortController, removeAbortController } from '@/utils/abortController'
+import { loggerService } from '@logger'
+import type { Chunk, ErrorChunk } from '@renderer/types/chunk'
+import { ChunkType } from '@renderer/types/chunk'
+import { addAbortController, removeAbortController } from '@renderer/utils/abortController'
 
 import type { CompletionsParams, CompletionsResult } from '../schemas'
 import type { CompletionsContext, CompletionsMiddleware } from '../types'
@@ -12,7 +12,7 @@ export const MIDDLEWARE_NAME = 'AbortHandlerMiddleware'
 
 export const AbortHandlerMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     const isRecursiveCall = ctx._internal?.toolProcessingState?.isRecursiveCall || false
 
@@ -39,7 +39,7 @@ export const AbortHandlerMiddleware: CompletionsMiddleware =
         messageId = `message-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
       } else {
         const processedMessages = params.messages
-        const lastUserMessage = processedMessages.findLast(m => m.role === 'user')
+        const lastUserMessage = processedMessages.findLast((m) => m.role === 'user')
         messageId = lastUserMessage?.id
       }
 
@@ -52,16 +52,13 @@ export const AbortHandlerMiddleware: CompletionsMiddleware =
     }
 
     addAbortController(abortKey, abortFn)
-
     const cleanup = (): void => {
       removeAbortController(abortKey, abortFn)
-
       if (ctx._internal?.flowControl) {
         ctx._internal.flowControl.abortController = undefined
         ctx._internal.flowControl.abortSignal = undefined
         ctx._internal.flowControl.cleanup = undefined
       }
-
       abortSignal = null
     }
 
@@ -69,7 +66,6 @@ export const AbortHandlerMiddleware: CompletionsMiddleware =
     if (!ctx._internal.flowControl) {
       ctx._internal.flowControl = {}
     }
-
     ctx._internal.flowControl.abortController = abortController
     ctx._internal.flowControl.abortSignal = abortSignal
     ctx._internal.flowControl.cleanup = cleanup
@@ -112,7 +108,6 @@ export const AbortHandlerMiddleware: CompletionsMiddleware =
             }
             controller.enqueue(errorChunk)
           }
-
           // 在流完全处理完成后清理 AbortController
           cleanup()
         }

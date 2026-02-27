@@ -4,17 +4,19 @@
  * 提供工具调用相关的处理API，每个交互使用一个新的实例
  */
 
+import { loggerService } from '@logger'
+import { processKnowledgeReferences } from '@renderer/services/KnowledgeService'
+import type {
+  BaseTool,
+  MCPCallToolResponse,
+  MCPTool,
+  MCPToolResponse,
+  MCPToolResultContent,
+  NormalToolResponse
+} from '@renderer/types'
+import type { Chunk } from '@renderer/types/chunk'
+import { ChunkType } from '@renderer/types/chunk'
 import type { ToolSet, TypedToolCall, TypedToolError, TypedToolResult } from 'ai'
-
-import { loggerService } from '@/services/LoggerService'
-import type { Chunk } from '@/types/chunk'
-import { ChunkType } from '@/types/chunk'
-import type { MCPCallToolResponse, MCPToolResponse, MCPToolResultContent, NormalToolResponse } from '@/types/mcp'
-import type { BaseTool, MCPTool } from '@/types/tool'
-// import type {
-//   AnthropicSearchOutput,
-//   WebSearchPluginConfig
-// } from '@cherrystudio/ai-core/core/plugins/built-in/webSearchPlugin'
 
 const logger = loggerService.withContext('ToolCallChunkHandler')
 
@@ -210,8 +212,9 @@ export class ToolCallChunkHandler {
         description: toolName,
         type: 'builtin'
       } as BaseTool
-    } else if ((mcpTool = this.mcpTools.find(t => t.name === toolName) as MCPTool)) {
+    } else if ((mcpTool = this.mcpTools.find((t) => t.id === toolName) as MCPTool)) {
       // 如果是客户端执行的 MCP 工具，沿用现有逻辑
+      // toolName is mcpTool.id (registered with id as key in convertMcpToolsToAiSdkTools)
       logger.info(`[ToolCallChunkHandler] Handling client-side MCP tool: ${toolName}`)
       // mcpTool = this.mcpTools.find((t) => t.name === toolName) as MCPTool
       // if (!mcpTool) {
@@ -288,7 +291,7 @@ export class ToolCallChunkHandler {
     // 工具特定的后处理
     switch (toolResponse.tool.name) {
       case 'builtin_knowledge_search': {
-        // processKnowledgeReferences(toolResponse.response, this.onChunk)
+        processKnowledgeReferences(toolResponse.response, this.onChunk)
         break
       }
       // 未来可以在这里添加其他工具的后处理逻辑
@@ -371,7 +374,7 @@ function extractImagesFromToolOutput(output: unknown): string[] {
 
   return contents
     .filter(isMcpImageContent)
-    .map(content => `data:${content.mimeType ?? 'image/png'};base64,${content.data}`)
+    .map((content) => `data:${content.mimeType ?? 'image/png'};base64,${content.data}`)
 }
 
 function isMcpCallToolResponse(value: unknown): value is MCPCallToolResponse {

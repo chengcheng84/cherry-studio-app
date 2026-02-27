@@ -1,4 +1,4 @@
-import type { Model } from '@/types/assistant'
+import type { Model } from '@renderer/types'
 
 export const COPILOT_EDITOR_VERSION = 'vscode/1.104.1'
 export const COPILOT_PLUGIN_VERSION = 'copilot-chat/0.26.7'
@@ -21,5 +21,5 @@ const COPILOT_RESPONSES_MODEL_IDS = ['gpt-5-codex']
 export function isCopilotResponsesModel(model: Model): boolean {
   const normalizedId = model.id?.trim().toLowerCase()
   const normalizedName = model.name?.trim().toLowerCase()
-  return COPILOT_RESPONSES_MODEL_IDS.some(target => normalizedId === target || normalizedName === target)
+  return COPILOT_RESPONSES_MODEL_IDS.some((target) => normalizedId === target || normalizedName === target)
 }

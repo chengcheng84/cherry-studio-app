@@ -2,12 +2,14 @@ import type {
   AnthropicSearchConfig,
   OpenAISearchConfig,
   WebSearchPluginConfig
-} from '@cherrystudio/ai-core/built-in/plugins'
+} from '@cherrystudio/ai-core/core/plugins/built-in/webSearchPlugin/helper'
 import type { BaseProviderId } from '@cherrystudio/ai-core/provider'
+import { isOpenAIDeepResearchModel, isOpenAIWebSearchChatCompletionOnlyModel } from '@renderer/config/models'
+import type { CherryWebSearchConfig } from '@renderer/store/websearch'
+import type { Model } from '@renderer/types'
+import { mapRegexToPatterns } from '@renderer/utils/blacklistMatchPattern'
 
-import { isOpenAIDeepResearchModel, isOpenAIWebSearchChatCompletionOnlyModel } from '@/config/models'
-import type { Model } from '@/types/assistant'
-import type { CherryWebSearchConfig } from '@/types/websearch'
+const X_AI_MAX_SEARCH_RESULT = 30
 
 export function getWebSearchParams(model: Model): Record<string, any> {
   if (model.provider === 'hunyuan') {
@@ -47,6 +49,7 @@ export function buildProviderBuiltinWebSearchConfig(
   model?: Model
 ): WebSearchPluginConfig | undefined {
   switch (providerId) {
+    case 'azure-responses':
     case 'openai': {
       const searchContextSize = isOpenAIDeepResearchModel(model)
         ? 'medium'
@@ -68,25 +71,25 @@ export function buildProviderBuiltinWebSearchConfig(
       }
     }
     case 'anthropic': {
-      // const blockedDomains = mapRegexToPatterns(webSearchConfig.excludeDomains)
+      const blockedDomains = mapRegexToPatterns(webSearchConfig.excludeDomains)
       const anthropicSearchOptions: AnthropicSearchConfig = {
         maxUses: webSearchConfig.maxResults,
-        blockedDomains: undefined
+        blockedDomains: blockedDomains.length > 0 ? blockedDomains : undefined
       }
       return {
         anthropic: anthropicSearchOptions
       }
     }
     case 'xai': {
-      // const excludeDomains = mapRegexToPatterns(webSearchConfig.excludeDomains)
+      const excludeDomains = mapRegexToPatterns(webSearchConfig.excludeDomains)
       return {
         xai: {
-          maxSearchResults: webSearchConfig.maxResults,
+          maxSearchResults: Math.min(webSearchConfig.maxResults, X_AI_MAX_SEARCH_RESULT),
           returnCitations: true,
           sources: [
             {
-              type: 'web'
-              // excludedWebsites: excludeDomains.slice(0, Math.min(excludeDomains.length, 5))
+              type: 'web',
+              excludedWebsites: excludeDomains.slice(0, Math.min(excludeDomains.length, 5))
             },
             { type: 'news' },
             { type: 'x' }

@@ -3,35 +3,28 @@
  * 处理文件内容提取、文件格式转换、文件上传等逻辑
  */
 
+import type OpenAI from '@cherrystudio/openai'
+import { loggerService } from '@logger'
+import { getProviderByModel } from '@renderer/services/AssistantService'
+import type { FileMetadata, Message, Model } from '@renderer/types'
+import { FileTypes } from '@renderer/types'
+import type { FileMessageBlock } from '@renderer/types/newMessage'
+import { findFileBlocks } from '@renderer/utils/messageUtils/find'
 import type { FilePart, TextPart } from 'ai'
-import { File } from 'expo-file-system'
-
-import { extractPdfText } from '@/modules/pdf-text-extractor'
-import { loggerService } from '@/services/LoggerService'
-import { getProviderByModel } from '@/services/ProviderService'
-import type { Model } from '@/types/assistant'
-import type { FileMetadata } from '@/types/file'
-import { FileTypes } from '@/types/file'
-import type { FileMessageBlock, Message } from '@/types/message'
-import { findFileBlocks } from '@/utils/messageUtils/find'
 
 import { getAiSdkProviderId } from '../provider/factory'
 import { getFileSizeLimit, supportsImageInput, supportsLargeFileUpload, supportsPdfInput } from './modelCapabilities'
 
 const logger = loggerService.withContext('fileProcessor')
 
-/** PDF 文本提取的最大页数限制 */
-const PDF_MAX_PAGES = 20
-
 /**
  * 提取文件内容
  */
 export async function extractFileContent(message: Message): Promise<string> {
-  const fileBlocks = await findFileBlocks(message)
-
+  const fileBlocks = findFileBlocks(message)
   if (fileBlocks.length > 0) {
     const textFileBlocks = fileBlocks.filter(
-      fb => fb.file && [FileTypes.TEXT, FileTypes.DOCUMENT].includes(fb.file.type)
+      (fb) => fb.file && [FileTypes.TEXT, FileTypes.DOCUMENT].includes(fb.file.type)
     )
 
     if (textFileBlocks.length > 0) {
@@ -40,32 +33,7 @@ export async function extractFileContent(message: Message): Promise<string> {
 
       for (const fileBlock of textFileBlocks) {
         const file = fileBlock.file
-        let fileContent = ''
-
-        // PDF 文件使用原生模块提取文本
-        if (file.ext === '.pdf') {
-          try {
-            const result = await extractPdfText(file.path, { maxPages: PDF_MAX_PAGES })
-            if (result.extractionError) {
-              logger.warn(`PDF text extraction had errors for ${file.origin_name}`)
-              fileContent = `[PDF text extraction had errors for ${file.origin_name}]`
-            } else {
-              fileContent = result.text.trim()
-            }
-          } catch (error) {
-            logger.warn(`Failed to extract PDF text from ${file.origin_name}:`, error as Error)
-            fileContent = `[PDF text extraction failed for ${file.origin_name}]`
-          }
-        } else {
-          // 其他文件类型使用原有逻辑
-          try {
-            fileContent = new File(file.path).textSync().trim()
-          } catch (error) {
-            logger.warn(`Failed to read file ${file.origin_name}:`, error as Error)
-            fileContent = `[Failed to read file ${file.origin_name}]`
-          }
-        }
-
+        const fileContent = (await window.api.file.read(file.id + file.ext)).trim()
         const fileNameRow = 'file: ' + file.origin_name + '\n\n'
         text = text + fileNameRow + fileContent + divider
       }
@@ -86,7 +54,7 @@ export async function convertFileBlockToTextPart(fileBlock: FileMessageBlock): P
   // 处理文本文件
   if (file.type === FileTypes.TEXT) {
     try {
-      const fileContent = new File(file.path).textSync().trim()
+      const fileContent = await window.api.file.read(file.id + file.ext)
       return {
         type: 'text',
         text: `${file.origin_name}\n${fileContent.trim()}`
@@ -98,31 +66,8 @@ export async function convertFileBlockToTextPart(fileBlock: FileMessageBlock): P
 
   // 处理文档文件（PDF、Word、Excel等）- 提取为文本内容
   if (file.type === FileTypes.DOCUMENT) {
-    // PDF 文件使用原生模块提取文本
-    if (file.ext === '.pdf') {
-      try {
-        const result = await extractPdfText(file.path, { maxPages: PDF_MAX_PAGES })
-        if (result.extractionError) {
-          logger.warn(`PDF text extraction had errors for ${file.origin_name}`)
-          return null
-        }
-        if (result.text.trim()) {
-          return {
-            type: 'text',
-            text: `${file.origin_name}\n${result.text.trim()}`
-          }
-        }
-        logger.warn(`No text extracted from PDF ${file.origin_name}`)
-        return null
-      } catch (error) {
-        logger.warn(`Failed to extract PDF text from ${file.origin_name}:`, error as Error)
-        return null
-      }
-    }
-
-    // 其他文档类型（Word、Excel等）保持原有逻辑
     try {
-      const fileContent = new File(file.path).textSync().trim()
+      const fileContent = await window.api.file.read(file.id + file.ext, true) // true表示强制文本提取
       return {
         type: 'text',
         text: `${file.origin_name}\n${fileContent.trim()}`
@@ -138,37 +83,114 @@ export async function convertFileBlockToTextPart(fileBlock: FileMessageBlock): P
 /**
  * 处理Gemini大文件上传
  */
-export async function handleGeminiFileUpload(_file: FileMetadata, _model: Model): Promise<FilePart | null> {
-  throw new Error('Not implemented')
+export async function handleGeminiFileUpload(file: FileMetadata, model: Model): Promise<FilePart | null> {
+  try {
+    const provider = getProviderByModel(model)
 
-  // try {
-  //   const provider = getProviderByModel(model)
+    // 检查文件是否已经上传过
+    const fileMetadata = await window.api.fileService.retrieve(provider, file.id)
 
-  //   // 检查文件是否已经上传过
-  //   const fileMetadata = await window.api.fileService.retrieve(provider, file.id)
+    if (fileMetadata.status === 'success' && fileMetadata.originalFile?.file) {
+      const remoteFile = fileMetadata.originalFile.file as any // 临时类型断言，因为File类型定义可能不完整
+      // 注意：AI SDK的FilePart格式和Gemini原生格式不同，这里需要适配
+      // 暂时返回null让它回退到文本处理，或者需要扩展FilePart支持uri
+      logger.info(`File ${file.origin_name} already uploaded to Gemini with URI: ${remoteFile.uri || 'unknown'}`)
+      return null
+    }
 
-  //   if (fileMetadata.status === 'success' && fileMetadata.originalFile?.file) {
-  //     const remoteFile = fileMetadata.originalFile.file as any // 临时类型断言，因为File类型定义可能不完整
-  //     // 注意：AI SDK的FilePart格式和Gemini原生格式不同，这里需要适配
-  //     // 暂时返回null让它回退到文本处理，或者需要扩展FilePart支持uri
-  //     logger.info(`File ${file.origin_name} already uploaded to Gemini with URI: ${remoteFile.uri || 'unknown'}`)
-  //     return null
-  //   }
+    // 如果文件未上传，执行上传
+    const uploadResult = await window.api.fileService.upload(provider, file)
+    if (uploadResult.originalFile?.file) {
+      const remoteFile = uploadResult.originalFile.file as any // 临时类型断言
+      logger.info(`File ${file.origin_name} uploaded to Gemini with URI: ${remoteFile.uri || 'unknown'}`)
+      // 同样，这里需要处理URI格式的文件引用
+      return null
+    }
+  } catch (error) {
+    logger.error(`Failed to upload file ${file.origin_name} to Gemini:`, error as Error)
+  }
 
-  //   // 如果文件未上传，执行上传
-  //   const uploadResult = await window.api.fileService.upload(provider, file)
+  return null
+}
 
-  //   if (uploadResult.originalFile?.file) {
-  //     const remoteFile = uploadResult.originalFile.file as any // 临时类型断言
-  //     logger.info(`File ${file.origin_name} uploaded to Gemini with URI: ${remoteFile.uri || 'unknown'}`)
-  //     // 同样，这里需要处理URI格式的文件引用
-  //     return null
-  //   }
-  // } catch (error) {
-  //   logger.error(`Failed to upload file ${file.origin_name} to Gemini:`, error as Error)
-  // }
+/**
+ * 处理OpenAI兼容大文件上传
+ */
+export async function handleOpenAILargeFileUpload(
+  file: FileMetadata,
+  model: Model
+): Promise<(FilePart & { id?: string }) | null> {
+  const provider = getProviderByModel(model)
+  // 如果模型为qwen-long系列，文档中要求purpose需要为'file-extract'
+  if (['qwen-long', 'qwen-doc'].some((modelName) => model.name.includes(modelName))) {
+    file = {
+      ...file,
+      // 该类型并不在OpenAI定义中，但符合sdk规范，强制断言
+      purpose: 'file-extract' as OpenAI.FilePurpose
+    }
+  }
+  try {
+    // 检查文件是否已经上传过
+    const fileMetadata = await window.api.fileService.retrieve(provider, file.id)
+    if (fileMetadata.status === 'success' && fileMetadata.originalFile?.file) {
+      // 断言OpenAIFile对象
+      const remoteFile = fileMetadata.originalFile.file as OpenAI.Files.FileObject
+      // 判断用途是否一致
+      if (remoteFile.purpose !== file.purpose) {
+        logger.warn(`File ${file.origin_name} purpose mismatch: ${remoteFile.purpose} vs ${file.purpose}`)
+        throw new Error('File purpose mismatch')
+      }
+      return {
+        type: 'file',
+        filename: file.origin_name,
+        mediaType: '',
+        data: `fileid://${remoteFile.id}`
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to retrieve file ${file.origin_name}:`, error as Error)
+    return null
+  }
+  try {
+    // 如果文件未上传，执行上传
+    const uploadResult = await window.api.fileService.upload(provider, file)
+    if (uploadResult.originalFile?.file) {
+      // 断言OpenAIFile对象
+      const remoteFile = uploadResult.originalFile.file as OpenAI.Files.FileObject
+      logger.info(`File ${file.origin_name} uploaded.`)
+      return {
+        type: 'file',
+        filename: remoteFile.filename,
+        mediaType: '',
+        data: `fileid://${remoteFile.id}`
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to upload file ${file.origin_name}:`, error as Error)
+  }
 
-  // return null
+  return null
+}
+
+/**
+ * 大文件上传路由函数
+ */
+export async function handleLargeFileUpload(
+  file: FileMetadata,
+  model: Model
+): Promise<(FilePart & { id?: string }) | null> {
+  const provider = getProviderByModel(model)
+  const aiSdkId = getAiSdkProviderId(provider)
+
+  if (['google', 'google-generative-ai', 'google-vertex'].includes(aiSdkId)) {
+    return await handleGeminiFileUpload(file, model)
+  }
+
+  if (provider.type === 'openai') {
+    return await handleOpenAILargeFileUpload(file, model)
+  }
+
+  return null
 }
 
 /**
@@ -186,12 +208,10 @@ export async function convertFileBlockToFilePart(fileBlock: FileMessageBlock, mo
         // 如果支持大文件上传（如Gemini File API），尝试上传
         if (supportsLargeFileUpload(model)) {
           logger.info(`Large PDF file ${file.origin_name} (${file.size} bytes) attempting File API upload`)
-          const uploadResult = await handleGeminiFileUpload(file, model)
-
+          const uploadResult = await handleLargeFileUpload(file, model)
           if (uploadResult) {
             return uploadResult
           }
-
           // 如果上传失败，回退到文本处理
           logger.warn(`Failed to upload large PDF ${file.origin_name}, falling back to text extraction`)
           return null
@@ -201,11 +221,11 @@ export async function convertFileBlockToFilePart(fileBlock: FileMessageBlock, mo
         }
       }
 
-      const _file = new File(file.path)
+      const base64Data = await window.api.file.base64File(file.id + file.ext)
       return {
         type: 'file',
-        data: await _file.base64(),
-        mediaType: _file.type || 'application/pdf',
+        data: base64Data.data,
+        mediaType: base64Data.mime,
         filename: file.origin_name
       }
     }
@@ -218,10 +238,10 @@ export async function convertFileBlockToFilePart(fileBlock: FileMessageBlock, mo
         return null
       }
 
-      const image = new File(file.path)
+      const base64Data = await window.api.file.base64Image(file.id + file.ext)
 
       // 处理MIME类型，特别是jpg->jpeg的转换（Anthropic要求）
-      let mediaType = image.type
+      let mediaType = base64Data.mime
       const provider = getProviderByModel(model)
       const aiSdkId = getAiSdkProviderId(provider)
 
@@ -231,8 +251,8 @@ export async function convertFileBlockToFilePart(fileBlock: FileMessageBlock, mo
 
       return {
         type: 'file',
-        data: await image.base64(),
-        mediaType: mediaType || 'image/jpeg',
+        data: base64Data.base64,
+        mediaType: mediaType,
         filename: file.origin_name
       }
     }

@@ -1,9 +1,9 @@
-import type { Model, Provider } from '@/types/assistant'
+import type { Model, Provider } from '@renderer/types'
 
 export interface RuleSet {
-  rules: {
+  rules: Array<{
     match: (model: Model) => boolean
     provider: (provider: Provider) => Provider
-  }[]
+  }>
   fallbackRule: (provider: Provider) => Provider
 }

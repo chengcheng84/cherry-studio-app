@@ -1,3 +1,4 @@
+import { withSpanResult } from '@renderer/services/SpanManagerService'
 import type {
   RequestOptions,
   SdkInstance,
@@ -7,7 +8,7 @@ import type {
   SdkRawOutput,
   SdkTool,
   SdkToolCall
-} from '@/types/sdk'
+} from '@renderer/types/sdk'
 
 import type { BaseApiClient } from '../clients'
 import type { CompletionsParams, CompletionsResult } from './schemas'
@@ -39,7 +40,6 @@ function createInitialCallContext<TContext extends BaseContext, TCallArgs extend
   if (specificContextFactory) {
     return specificContextFactory(baseContext, originalCallArgs)
   }
-
   return baseContext as TContext // Fallback to base context if no specific factory
 }
 
@@ -54,17 +54,15 @@ function createInitialCallContext<TContext extends BaseContext, TCallArgs extend
  * @param funcs - Array of functions to compose. / 要组合的函数数组。
  * @returns The composed function. / 组合后的函数。
  */
-function compose(...funcs: ((...args: any[]) => any)[]): (...args: any[]) => any {
+function compose(...funcs: Array<(...args: any[]) => any>): (...args: any[]) => any {
   if (funcs.length === 0) {
     // If no functions to compose, return a function that returns its first argument, or undefined if no args. /
     // 如果没有要组合的函数，则返回一个函数，该函数返回其第一个参数，如果没有参数则返回undefined。
     return (...args: any[]) => (args.length > 0 ? args[0] : undefined)
   }
-
   if (funcs.length === 1) {
     return funcs[0]
   }
-
   return funcs.reduce(
     (a, b) =>
       (...args: any[]) =>
@@ -119,7 +117,7 @@ export function applyMethodMiddlewares<
       return originalMethod.apply(currentArgs)
     }
 
-    const chain = middlewares.map(middleware => middleware(api)) // Cast API if TContext/TArgs mismatch general ProviderMethodMiddleware / 如果TContext/TArgs与通用的ProviderMethodMiddleware不匹配，则转换API
+    const chain = middlewares.map((middleware) => middleware(api)) // Cast API if TContext/TArgs mismatch general ProviderMethodMiddleware / 如果TContext/TArgs与通用的ProviderMethodMiddleware不匹配，则转换API
     const composedMiddlewareLogic = compose(...chain)
     const enhancedDispatch = composedMiddlewareLogic(finalDispatch)
 
@@ -242,7 +240,6 @@ export function applyCompletionsMiddlewares<
       // 如果没有进行转换，我们需要处理它。
 
       const sdkPayload = context._internal?.sdkPayload
-
       if (!sdkPayload) {
         throw new Error('SDK payload not found in context. Middleware chain should have transformed parameters.')
       }
@@ -250,7 +247,7 @@ export function applyCompletionsMiddlewares<
       const abortSignal = context._internal.flowControl?.abortSignal
       const timeout = context._internal.customState?.sdkMetadata?.timeout
 
-      const methodCall = async payload => {
+      const methodCall = async (payload) => {
         return await originalCompletionsMethod.call(originalApiClientInstance, payload, {
           ...options,
           signal: abortSignal,
@@ -258,23 +255,23 @@ export function applyCompletionsMiddlewares<
         })
       }
 
-      // const traceParams = {
-      //   name: `${params.assistant?.model?.name}.client`,
-      //   tag: 'LLM',
-      //   topicId: params.topicId || '',
-      //   modelName: params.assistant?.model?.name
-      // }
+      const traceParams = {
+        name: `${params.assistant?.model?.name}.client`,
+        tag: 'LLM',
+        topicId: params.topicId || '',
+        modelName: params.assistant?.model?.name
+      }
 
       // Call the original SDK method with transformed parameters
       // 使用转换后的参数调用原始 SDK 方法
-      // const rawOutput = await withSpanResult(methodCall, traceParams, sdkPayload)
-      const rawOutput = await methodCall(sdkPayload)
+      const rawOutput = await withSpanResult(methodCall, traceParams, sdkPayload)
+
       // Return result wrapped in CompletionsResult format
       // 以 CompletionsResult 格式返回包装的结果
       return { rawOutput } as CompletionsResult
     }
 
-    const chain = middlewares.map(middleware => middleware(api))
+    const chain = middlewares.map((middleware) => middleware(api))
     const composedMiddlewareLogic = compose(...chain)
 
     // `enhancedDispatch` has the signature `(context, params) => Promise<CompletionsResult>`. /

@@ -1,5 +1,5 @@
-import type { SdkRawChunk } from '@/types/sdk'
-import { asyncGeneratorToReadableStream, createSingleChunkReadableStream } from '@/utils/stream'
+import type { SdkRawChunk } from '@renderer/types/sdk'
+import { asyncGeneratorToReadableStream, createSingleChunkReadableStream } from '@renderer/utils/stream'
 
 import type { CompletionsParams, CompletionsResult } from '../schemas'
 import type { CompletionsContext, CompletionsMiddleware } from '../types'
@@ -19,13 +19,12 @@ export const MIDDLEWARE_NAME = 'StreamAdapterMiddleware'
  */
 export const StreamAdapterMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     // TODO:调用开始，因为这个是最靠近接口请求的地方，next执行代表着开始接口请求了
     // 但是这个中间件的职责是流适配，是否在这调用优待商榷
     // 调用下游中间件
     const result = await next(ctx, params)
-
     if (
       result.rawOutput &&
       !(result.rawOutput instanceof ReadableStream) &&
@@ -53,6 +52,5 @@ export const StreamAdapterMiddleware: CompletionsMiddleware =
         stream: whatwgReadableStream
       }
     }
-
     return result
   }

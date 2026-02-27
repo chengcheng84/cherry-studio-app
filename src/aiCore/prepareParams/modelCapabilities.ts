@@ -3,10 +3,10 @@
  * 检查不同模型支持的功能（PDF输入、图片输入、大文件上传等）
  */
 
-import { isVisionModel } from '@/config/models'
-import { getProviderByModel } from '@/services/ProviderService'
-import type { Model } from '@/types/assistant'
-import { FileTypes } from '@/types/file'
+import { isVisionModel } from '@renderer/config/models'
+import { getProviderByModel } from '@renderer/services/AssistantService'
+import type { Model } from '@renderer/types'
+import { FileTypes } from '@renderer/types'
 
 import { getAiSdkProviderId } from '../provider/factory'
 
@@ -29,7 +29,7 @@ function modelSupportValidator(
   const aiSdkId = getAiSdkProviderId(provider)
 
   // 黑名单：命中不支持的模型直接拒绝
-  if (unsupportedModels.some(name => model.name.includes(name))) {
+  if (unsupportedModels.some((name) => model.name.includes(name))) {
     return false
   }
 
@@ -39,7 +39,7 @@ function modelSupportValidator(
   }
 
   // 白名单：命中支持的模型名
-  if (supportedModels.some(name => model.name.includes(name))) {
+  if (supportedModels.some((name) => model.name.includes(name))) {
     return true
   }
 
@@ -83,19 +83,6 @@ export function supportsLargeFileUpload(model: Model): boolean {
     supportedModels: ['qwen-long', 'qwen-doc'],
     supportedProviders: ['google', 'google-generative-ai', 'google-vertex']
   })
-}
-
-/**
- * 检查模型是否支持TopP
- */
-export function supportsTopP(model: Model): boolean {
-  const provider = getProviderByModel(model)
-
-  if (provider?.type === 'anthropic' || model?.endpoint_type === 'anthropic') {
-    return false
-  }
-
-  return true
 }
 
 /**

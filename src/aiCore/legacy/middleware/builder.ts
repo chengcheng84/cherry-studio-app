@@ -1,4 +1,4 @@
-import { loggerService } from '@/services/LoggerService'
+import { loggerService } from '@logger'
 
 import { DefaultCompletionsNamedMiddlewares } from './register'
 import type { BaseContext, CompletionsMiddleware, MethodMiddleware } from './types'
@@ -67,13 +67,11 @@ export class MiddlewareBuilder<TMiddleware = any> {
    */
   insertAfter(targetName: string, middlewareToInsert: NamedMiddleware<TMiddleware>): this {
     const index = this.findMiddlewareIndex(targetName)
-
     if (index !== -1) {
       this.middlewares.splice(index + 1, 0, middlewareToInsert)
     } else {
       logger.warn(`未找到名为 '${targetName}' 的中间件，无法插入`)
     }
-
     return this
   }
 
@@ -85,13 +83,11 @@ export class MiddlewareBuilder<TMiddleware = any> {
    */
   insertBefore(targetName: string, middlewareToInsert: NamedMiddleware<TMiddleware>): this {
     const index = this.findMiddlewareIndex(targetName)
-
     if (index !== -1) {
       this.middlewares.splice(index, 0, middlewareToInsert)
     } else {
       logger.warn(`未找到名为 '${targetName}' 的中间件，无法插入`)
     }
-
     return this
   }
 
@@ -103,13 +99,11 @@ export class MiddlewareBuilder<TMiddleware = any> {
    */
   replace(targetName: string, newMiddleware: NamedMiddleware<TMiddleware>): this {
     const index = this.findMiddlewareIndex(targetName)
-
     if (index !== -1) {
       this.middlewares[index] = newMiddleware
     } else {
       logger.warn(`未找到名为 '${targetName}' 的中间件，无法替换`)
     }
-
     return this
   }
 
@@ -120,11 +114,9 @@ export class MiddlewareBuilder<TMiddleware = any> {
    */
   remove(targetName: string): this {
     const index = this.findMiddlewareIndex(targetName)
-
     if (index !== -1) {
       this.middlewares.splice(index, 1)
     }
-
     return this
   }
 
@@ -133,7 +125,7 @@ export class MiddlewareBuilder<TMiddleware = any> {
    * @returns 构建好的中间件数组
    */
   build(): TMiddleware[] {
-    return this.middlewares.map(item => item.middleware)
+    return this.middlewares.map((item) => item.middleware)
   }
 
   /**
@@ -192,7 +184,7 @@ export class MiddlewareBuilder<TMiddleware = any> {
    * @returns 索引，如果未找到返回 -1
    */
   private findMiddlewareIndex(name: string): number {
-    return this.middlewares.findIndex(item => item.name === name)
+    return this.middlewares.findIndex((item) => item.name === name)
   }
 }
 
@@ -200,6 +192,10 @@ export class MiddlewareBuilder<TMiddleware = any> {
  * Completions 中间件构建器
  */
 export class CompletionsMiddlewareBuilder extends MiddlewareBuilder<CompletionsMiddleware> {
+  constructor(baseChain?: NamedMiddleware<CompletionsMiddleware>[]) {
+    super(baseChain)
+  }
+
   /**
    * 使用默认的 Completions 中间件链
    * @returns CompletionsMiddlewareBuilder 实例
@@ -212,7 +208,11 @@ export class CompletionsMiddlewareBuilder extends MiddlewareBuilder<CompletionsM
 /**
  * 通用方法中间件构建器
  */
-export class MethodMiddlewareBuilder extends MiddlewareBuilder<MethodMiddleware> {}
+export class MethodMiddlewareBuilder extends MiddlewareBuilder<MethodMiddleware> {
+  constructor(baseChain?: NamedMiddleware<MethodMiddleware>[]) {
+    super(baseChain)
+  }
+}
 
 // 便捷的工厂函数
 

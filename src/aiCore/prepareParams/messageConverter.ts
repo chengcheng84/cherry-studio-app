@@ -3,6 +3,18 @@
  * 将 Cherry Studio 消息格式转换为 AI SDK 消息格式
  */
 
+import type { ReasoningPart } from '@ai-sdk/provider-utils'
+import { loggerService } from '@logger'
+import { isImageEnhancementModel, isVisionModel } from '@renderer/config/models'
+import type { Message, Model } from '@renderer/types'
+import type { FileMessageBlock, ImageMessageBlock, ThinkingMessageBlock } from '@renderer/types/newMessage'
+import {
+  findFileBlocks,
+  findImageBlocks,
+  findThinkingBlocks,
+  getMainTextContent
+} from '@renderer/utils/messageUtils/find'
+import { parseDataUrl } from '@shared/utils'
 import type {
   AssistantModelMessage,
   FilePart,
@@ -12,13 +24,6 @@ import type {
   TextPart,
   UserModelMessage
 } from 'ai'
-import { File } from 'expo-file-system'
-
-import { isImageEnhancementModel, isVisionModel } from '@/config/models'
-import { loggerService } from '@/services/LoggerService'
-import type { Model } from '@/types/assistant'
-import type { FileMessageBlock, ImageMessageBlock, Message, ThinkingMessageBlock } from '@/types/message'
-import { findFileBlocks, findImageBlocks, findThinkingBlocks, getMainTextContent } from '@/utils/messageUtils/find'
 
 import { convertFileBlockToFilePart, convertFileBlockToTextPart } from './fileProcessor'
 
@@ -33,11 +38,10 @@ export async function convertMessageToSdkParam(
   isVisionModel = false,
   model?: Model
 ): Promise<ModelMessage | ModelMessage[]> {
-  const content = await getMainTextContent(message)
-  const fileBlocks = await findFileBlocks(message)
-  const imageBlocks = await findImageBlocks(message)
-  const reasoningBlocks = await findThinkingBlocks(message)
-
+  const content = getMainTextContent(message)
+  const fileBlocks = findFileBlocks(message)
+  const imageBlocks = findImageBlocks(message)
+  const reasoningBlocks = findThinkingBlocks(message)
   if (message.role === 'user' || message.role === 'system') {
     return convertMessageToUserModelMessage(content, fileBlocks, imageBlocks, isVisionModel, model)
   } else {
@@ -45,35 +49,39 @@ export async function convertMessageToSdkParam(
   }
 }
 
-async function convertImageBlockToImagePart(imageBlocks: ImageMessageBlock[]): Promise<ImagePart[]> {
-  const parts: ImagePart[] = []
+async function convertImageBlockToImagePart(imageBlocks: ImageMessageBlock[]): Promise<Array<ImagePart>> {
+  const parts: Array<ImagePart> = []
   for (const imageBlock of imageBlocks) {
     if (imageBlock.file) {
       try {
-        const image = new File(imageBlock.file.path)
+        const image = await window.api.file.base64Image(imageBlock.file.id + imageBlock.file.ext)
         parts.push({
           type: 'image',
-          image: await image.base64(),
-          mediaType: image.type
+          image: image.base64,
+          mediaType: image.mime
         })
       } catch (error) {
-        logger.warn('Failed to load image:', error as Error)
+        logger.error('Failed to load image file, image will be excluded from message:', {
+          fileId: imageBlock.file.id,
+          fileName: imageBlock.file.origin_name,
+          error: error as Error
+        })
       }
     } else if (imageBlock.url) {
-      const isBase64 = imageBlock.url.startsWith('data:')
-      if (isBase64) {
-        const base64 = imageBlock.url.match(/^data:[^;]*;base64,(.+)$/)![1]
-        const mimeMatch = imageBlock.url.match(/^data:([^;]+)/)
-        parts.push({
-          type: 'image',
-          image: base64,
-          mediaType: mimeMatch ? mimeMatch[1] : 'image/png'
+      const url = imageBlock.url
+      const parseResult = parseDataUrl(url)
+      if (parseResult?.isBase64) {
+        const { mediaType, data } = parseResult
+        parts.push({ type: 'image', image: data, ...(mediaType ? { mediaType } : {}) })
+      } else if (url.startsWith('data:')) {
+        // Malformed data URL or non-base64 data URL
+        logger.error('Malformed or non-base64 data URL detected, image will be excluded:', {
+          urlPrefix: url.slice(0, 50) + '...'
         })
+        continue
       } else {
-        parts.push({
-          type: 'image',
-          image: imageBlock.url
-        })
+        // For remote URLs we keep payload minimal to match existing expectations.
+        parts.push({ type: 'image', image: url })
       }
     }
   }
@@ -90,7 +98,7 @@ async function convertMessageToUserModelMessage(
   isVisionModel = false,
   model?: Model
 ): Promise<UserModelMessage | (UserModelMessage | SystemModelMessage)[]> {
-  const parts: (TextPart | FilePart | ImagePart)[] = []
+  const parts: Array<TextPart | FilePart | ImagePart> = []
   if (content) {
     parts.push({ type: 'text', text: content })
   }
@@ -144,6 +152,7 @@ async function convertMessageToUserModelMessage(
     content: parts
   }
 }
+
 /**
  * 转换为助手模型消息
  */
@@ -153,13 +162,13 @@ async function convertMessageToAssistantModelMessage(
   thinkingBlocks: ThinkingMessageBlock[],
   model?: Model
 ): Promise<AssistantModelMessage> {
-  const parts: (TextPart | FilePart)[] = []
+  const parts: Array<TextPart | ReasoningPart | FilePart> = []
   if (content) {
     parts.push({ type: 'text', text: content })
   }
 
   for (const thinkingBlock of thinkingBlocks) {
-    parts.push({ type: 'text', text: thinkingBlock.content })
+    parts.push({ type: 'reasoning', text: thinkingBlock.content })
   }
 
   for (const fileBlock of fileBlocks) {
@@ -184,26 +193,30 @@ async function convertMessageToAssistantModelMessage(
     content: parts
   }
 }
+
 /**
  * Converts an array of messages to SDK-compatible model messages.
  *
  * This function processes messages and transforms them into the format required by the SDK.
  * It handles special cases for vision models and image enhancement models.
  *
- * @param messages - Array of messages to convert. Must contain at least 2 messages when using image enhancement models.
+ * @param messages - Array of messages to convert.
  * @param model - The model configuration that determines conversion behavior
  *
  * @returns A promise that resolves to an array of SDK-compatible model messages
  *
  * @remarks
- * For image enhancement models with 2+ messages:
- * - Expects the second-to-last message (index length-2) to be an assistant message containing image blocks
- * - Expects the last message (index length-1) to be a user message
- * - Extracts images from the assistant message and appends them to the user message content
- * - Returns only the last two processed messages [assistantSdkMessage, userSdkMessage]
+ * For image enhancement models:
+ * - Collapses the conversation into [system?, user(image)] format
+ * - Searches backwards through all messages to find the most recent assistant message with images
+ * - Preserves all system messages (including ones generated from file uploads like 'fileid://...')
+ * - Extracts the last user message content and merges images from the previous assistant message
+ * - Returns only the collapsed messages: system messages (if any) followed by a single user message
+ * - If no user message is found, returns only system messages
+ * - Typical pattern: [system?, user, assistant(image), user] -> [system?, user(image)]
  *
  * For other models:
- * - Returns all converted messages in order
+ * - Returns all converted messages in order without special image handling
  *
  * The function automatically detects vision model capabilities and adjusts conversion accordingly.
  */
@@ -216,29 +229,63 @@ export async function convertMessagesToSdkMessages(messages: Message[], model: M
     sdkMessages.push(...(Array.isArray(sdkMessage) ? sdkMessage : [sdkMessage]))
   }
   // Special handling for image enhancement models
-  // Only keep the last two messages and merge images into the user message
-  // [system?, user, assistant, user]
-  if (isImageEnhancementModel(model) && messages.length >= 3) {
-    const needUpdatedMessages = messages.slice(-2)
-    const needUpdatedSdkMessages = sdkMessages.slice(-2)
-    const assistantMessage = needUpdatedMessages.filter(m => m.role === 'assistant')[0]
-    const assistantSdkMessage = needUpdatedSdkMessages.filter(m => m.role === 'assistant')[0]
-    const userSdkMessage = needUpdatedSdkMessages.filter(m => m.role === 'user')[0]
-    const systemSdkMessages = sdkMessages.filter(m => m.role === 'system')
-    const imageBlocks = await findImageBlocks(assistantMessage)
+  // These models support multi-turn conversations but need images from previous assistant messages
+  // to be merged into the current user message for editing/enhancement operations.
+  //
+  // Key behaviors:
+  // 1. Preserve all conversation history for context
+  // 2. Find images from the previous assistant message and merge them into the last user message
+  // 3. This allows users to switch from LLM conversations and use that context for image generation
+  if (isImageEnhancementModel(model)) {
+    // Find the last user SDK message index
+    const lastUserSdkIndex = (() => {
+      for (let i = sdkMessages.length - 1; i >= 0; i--) {
+        if (sdkMessages[i].role === 'user') return i
+      }
+      return -1
+    })()
+
+    // If no user message found, return messages as-is
+    if (lastUserSdkIndex < 0) {
+      return sdkMessages
+    }
+
+    // Find the nearest preceding assistant message in original messages
+    let prevAssistant: Message | null = null
+    for (let i = messages.length - 2; i >= 0; i--) {
+      if (messages[i].role === 'assistant') {
+        prevAssistant = messages[i]
+        break
+      }
+    }
+
+    // Check if there are images from the previous assistant message
+    const imageBlocks = prevAssistant ? findImageBlocks(prevAssistant) : []
     const imageParts = await convertImageBlockToImagePart(imageBlocks)
-    const parts: (TextPart | ImagePart | FilePart)[] = []
-    if (typeof userSdkMessage.content === 'string') {
-      parts.push({ type: 'text', text: userSdkMessage.content })
-      parts.push(...imageParts)
-      userSdkMessage.content = parts
-    } else {
-      userSdkMessage.content.push(...imageParts)
+
+    // If no images to merge, return messages as-is
+    if (imageParts.length === 0) {
+      return sdkMessages
     }
-    if (systemSdkMessages.length > 0) {
-      return [systemSdkMessages[0], assistantSdkMessage, userSdkMessage]
+
+    // Build the new last user message with merged images
+    const lastUserSdk = sdkMessages[lastUserSdkIndex] as UserModelMessage
+    let finalUserParts: Array<TextPart | FilePart | ImagePart> = []
+
+    if (typeof lastUserSdk.content === 'string') {
+      finalUserParts.push({ type: 'text', text: lastUserSdk.content })
+    } else if (Array.isArray(lastUserSdk.content)) {
+      finalUserParts = [...lastUserSdk.content]
     }
-    return [assistantSdkMessage, userSdkMessage]
+
+    // Append images from the previous assistant message
+    finalUserParts.push(...imageParts)
+
+    // Replace the last user message with the merged version
+    const result = [...sdkMessages]
+    result[lastUserSdkIndex] = { role: 'user', content: finalUserParts }
+
+    return result
   }
 
   return sdkMessages

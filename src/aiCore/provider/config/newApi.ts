@@ -1,7 +1,7 @@
 /**
  * NewAPI规则集
  */
-import type { Provider } from '@/types/assistant'
+import type { Provider } from '@renderer/types'
 
 import { endpointIs, provider2Provider } from './helper'
 import type { RuleSet } from './types'
@@ -36,7 +36,7 @@ const NEWAPI_RULES: RuleSet = {
       }
     },
     {
-      match: model => endpointIs('openai')(model) || endpointIs('image-generation')(model),
+      match: (model) => endpointIs('openai')(model) || endpointIs('image-generation')(model),
       provider: (provider: Provider) => {
         return {
           ...provider,

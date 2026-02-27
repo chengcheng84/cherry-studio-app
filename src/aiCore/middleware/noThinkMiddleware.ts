@@ -1,6 +1,5 @@
+import { loggerService } from '@logger'
 import type { LanguageModelMiddleware } from 'ai'
-
-import { loggerService } from '@/services/LoggerService'
 
 const logger = loggerService.withContext('noThinkMiddleware')
 
@@ -18,7 +17,7 @@ export function noThinkMiddleware(): LanguageModelMiddleware {
       const transformedParams = { ...params }
       // Process messages in prompt
       if (transformedParams.prompt && Array.isArray(transformedParams.prompt)) {
-        transformedParams.prompt = transformedParams.prompt.map(message => {
+        transformedParams.prompt = transformedParams.prompt.map((message) => {
           // Only process user messages
           if (message.role === 'user') {
             // Process content array

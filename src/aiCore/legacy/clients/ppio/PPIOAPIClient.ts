@@ -1,13 +1,17 @@
-import type OpenAI from 'openai'
-
-import { isSupportedModel } from '@/config/models'
-import { loggerService } from '@/services/LoggerService'
-import type { Model } from '@/types/assistant'
+import type OpenAI from '@cherrystudio/openai'
+import { loggerService } from '@logger'
+import { isSupportedModel } from '@renderer/config/models'
+import type { Model, Provider } from '@renderer/types'
 
 import { OpenAIAPIClient } from '../openai/OpenAIApiClient'
 
 const logger = loggerService.withContext('PPIOAPIClient')
 export class PPIOAPIClient extends OpenAIAPIClient {
+  constructor(provider: Provider) {
+    super(provider)
+  }
+
+  // oxlint-disable-next-line @typescript-eslint/no-unused-vars
   override getClientCompatibilityType(_model?: Model): string[] {
     return ['OpenAIAPIClient']
   }
@@ -53,7 +57,7 @@ export class PPIOAPIClient extends OpenAIAPIClient {
       }))
 
       // Clean up model IDs and filter supported models
-      processedModels.forEach(model => {
+      processedModels.forEach((model) => {
         if (model.id) {
           model.id = model.id.trim()
         }

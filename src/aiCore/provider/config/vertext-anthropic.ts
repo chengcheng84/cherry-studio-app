@@ -1,4 +1,4 @@
-import type { Provider } from '@/types/assistant'
+import type { Provider } from '@renderer/types'
 
 import { provider2Provider, startsWith } from './helper'
 import type { RuleSet } from './types'

@@ -1,13 +1,17 @@
-import type OpenAI from 'openai'
-
-import { loggerService } from '@/services/LoggerService'
-import type { GenerateImageParams } from '@/types/image'
+import type OpenAI from '@cherrystudio/openai'
+import { loggerService } from '@logger'
+import type { Provider } from '@renderer/types'
+import type { GenerateImageParams } from '@renderer/types'
 
 import { OpenAIAPIClient } from '../openai/OpenAIApiClient'
 
 const logger = loggerService.withContext('ZhipuAPIClient')
 
 export class ZhipuAPIClient extends OpenAIAPIClient {
+  constructor(provider: Provider) {
+    super(provider)
+  }
+
   override getClientCompatibilityType(): string[] {
     return ['ZhipuAPIClient']
   }
@@ -32,7 +36,6 @@ export class ZhipuAPIClient extends OpenAIAPIClient {
     // 智谱AI特有的参数格式
     body.size = imageSize
     body.n = batchSize
-
     if (negativePrompt) {
       body.negative_prompt = negativePrompt
     }
@@ -42,7 +45,6 @@ export class ZhipuAPIClient extends OpenAIAPIClient {
       if (quality) {
         body.quality = quality
       }
-
       body.style = 'vivid'
     }
 
@@ -64,6 +66,11 @@ export class ZhipuAPIClient extends OpenAIAPIClient {
 
   public async listModels(): Promise<OpenAI.Models.Model[]> {
     const models = [
+      'glm-4.7',
+      'glm-4.6',
+      'glm-4.6v',
+      'glm-4.6v-flash',
+      'glm-4.6v-flashx',
       'glm-4.5',
       'glm-4.5-x',
       'glm-4.5-air',
@@ -88,7 +95,7 @@ export class ZhipuAPIClient extends OpenAIAPIClient {
     ]
 
     const created = Date.now()
-    return models.map(id => ({
+    return models.map((id) => ({
       id,
       owned_by: 'zhipu',
       object: 'model' as const,

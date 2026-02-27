@@ -1,5 +1,5 @@
-import { loggerService } from '@/services/LoggerService'
-import { ChunkType } from '@/types/chunk'
+import { loggerService } from '@logger'
+import { ChunkType } from '@renderer/types/chunk'
 
 import type { CompletionsParams, CompletionsResult } from '../schemas'
 import type { CompletionsContext, CompletionsMiddleware } from '../types'
@@ -14,7 +14,7 @@ const logger = loggerService.withContext('TransformCoreToSdkParamsMiddleware')
  */
 export const TransformCoreToSdkParamsMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     const internal = ctx._internal
 
@@ -31,7 +31,6 @@ export const TransformCoreToSdkParamsMiddleware: CompletionsMiddleware =
 
     // 检查是否有requestTransformer方法
     const requestTransformer = apiClient.getRequestTransformer()
-
     if (!requestTransformer) {
       logger.warn(`ApiClient does not have getRequestTransformer method, skipping transformation`)
       const result = await next(ctx, params)
@@ -73,7 +72,6 @@ export const TransformCoreToSdkParamsMiddleware: CompletionsMiddleware =
           type: ChunkType.IMAGE_CREATED
         })
       }
-
       return next(ctx, params)
     } catch (error) {
       logger.error('Error during request transformation:', error as Error)

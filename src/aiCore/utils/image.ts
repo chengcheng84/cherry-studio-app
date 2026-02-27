@@ -1,5 +1,5 @@
-import type { Model, Provider } from '@/types/assistant'
-import { isSystemProvider, SystemProviderIds } from '@/types/assistant'
+import type { Model, Provider } from '@renderer/types'
+import { isSystemProvider, SystemProviderIds } from '@renderer/types'
 
 export function buildGeminiGenerateImageParams(): Record<string, any> {
   return {

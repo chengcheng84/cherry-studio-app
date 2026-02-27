@@ -1,6 +1,6 @@
-import { loggerService } from '@/services/LoggerService'
-import type { ThinkingCompleteChunk, ThinkingDeltaChunk } from '@/types/chunk'
-import { ChunkType } from '@/types/chunk'
+import { loggerService } from '@logger'
+import type { ThinkingCompleteChunk, ThinkingDeltaChunk } from '@renderer/types/chunk'
+import { ChunkType } from '@renderer/types/chunk'
 
 import type { CompletionsParams, CompletionsResult, GenericChunk } from '../schemas'
 import type { CompletionsContext, CompletionsMiddleware } from '../types'
@@ -26,7 +26,7 @@ const logger = loggerService.withContext('ThinkChunkMiddleware')
  */
 export const ThinkChunkMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     // 调用下游中间件
     const result = await next(ctx, params)

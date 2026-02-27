@@ -1,6 +1,6 @@
-import { loggerService } from '@/services/LoggerService'
-import { ChunkType } from '@/types/chunk'
-import { convertLinks, flushLinkConverterBuffer } from '@/utils/linkConverter'
+import { loggerService } from '@logger'
+import { ChunkType } from '@renderer/types/chunk'
+import { convertLinks, flushLinkConverterBuffer } from '@renderer/utils/linkConverter'
 
 import type { CompletionsParams, CompletionsResult, GenericChunk } from '../schemas'
 import type { CompletionsContext, CompletionsMiddleware } from '../types'
@@ -21,7 +21,7 @@ export const MIDDLEWARE_NAME = 'WebSearchMiddleware'
  */
 export const WebSearchMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     ctx._internal.webSearchState = {
       results: undefined

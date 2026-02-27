@@ -1,6 +1,5 @@
-import type { Metrics, Usage } from '@/types/assistant'
-import type { Chunk, ErrorChunk } from '@/types/chunk'
-import type { MCPToolResponse } from '@/types/mcp'
+import type { MCPToolResponse, Metrics, Usage, WebSearchResponse } from '@renderer/types'
+import type { Chunk, ErrorChunk } from '@renderer/types/chunk'
 import type {
   SdkInstance,
   SdkMessageParam,
@@ -9,8 +8,7 @@ import type {
   SdkRawOutput,
   SdkTool,
   SdkToolCall
-} from '@/types/sdk'
-import type { WebSearchResponse } from '@/types/websearch'
+} from '@renderer/types/sdk'
 
 import type { BaseApiClient } from '../clients'
 import type { CompletionsParams, CompletionsResult } from './schemas'
@@ -31,7 +29,7 @@ export type OnChunkFunction = (chunk: Chunk | ErrorChunk) => void
 export interface BaseContext {
   [MIDDLEWARE_CONTEXT_SYMBOL]: true
   methodName: string
-  originalArgs: readonly any[]
+  originalArgs: Readonly<any[]>
 }
 
 /**
@@ -49,11 +47,11 @@ export interface ProcessingState<
     metrics?: Metrics
   }
   toolProcessingState?: {
-    pendingToolCalls?: TToolCall[]
-    executingToolCalls?: {
+    pendingToolCalls?: Array<TToolCall>
+    executingToolCalls?: Array<{
       sdkToolCall: TToolCall
       mcpToolResponse: MCPToolResponse
-    }[]
+    }>
     output?: SdkRawOutput | string
     isRecursiveCall?: boolean
     recursionDepth?: number
@@ -165,4 +163,4 @@ export type CompletionsMiddleware<
 ) => Promise<CompletionsResult>
 
 // Re-export for convenience
-export type { Chunk as OnChunkArg } from '@/types/chunk'
+export type { Chunk as OnChunkArg } from '@renderer/types/chunk'

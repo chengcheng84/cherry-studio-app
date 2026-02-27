@@ -1,4 +1,4 @@
-import type { Model, Provider } from '@/types/assistant'
+import type { Model, Provider } from '@renderer/types'
 
 import type { RuleSet } from './types'
 
@@ -18,6 +18,5 @@ export function provider2Provider(ruleSet: RuleSet, model: Model, provider: Prov
       return rule.provider(provider)
     }
   }
-
   return ruleSet.fallbackRule(provider)
 }

@@ -1,5 +1,5 @@
-import type { ErrorChunk } from '@/types/chunk'
-import { ChunkType } from '@/types/chunk'
+import type { ErrorChunk } from '@renderer/types/chunk'
+import { ChunkType } from '@renderer/types/chunk'
 
 /**
  * Creates an ErrorChunk object with a standardized structure.
@@ -26,10 +26,8 @@ export function createErrorChunk(error: any, chunkType: ChunkType = ChunkType.ER
       },
       {} as Record<string, any>
     )
-
     if (!errorDetails.message && error.toString && typeof error.toString === 'function') {
       const errMsg = error.toString()
-
       if (errMsg !== '[object Object]') {
         errorDetails.message = errMsg
       }

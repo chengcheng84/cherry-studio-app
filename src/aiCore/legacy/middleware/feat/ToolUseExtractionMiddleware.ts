@@ -1,10 +1,10 @@
-import { loggerService } from '@/services/LoggerService'
-import type { MCPToolCreatedChunk, TextDeltaChunk } from '@/types/chunk'
-import { ChunkType } from '@/types/chunk'
-import type { MCPTool } from '@/types/tool'
-import { parseToolUse } from '@/utils/mcpTool'
-import type { TagConfig } from '@/utils/tagExtraction'
-import { TagExtractor } from '@/utils/tagExtraction'
+import { loggerService } from '@logger'
+import type { MCPTool } from '@renderer/types'
+import type { MCPToolCreatedChunk, TextDeltaChunk } from '@renderer/types/chunk'
+import { ChunkType } from '@renderer/types/chunk'
+import { parseToolUse } from '@renderer/utils/mcp-tools'
+import type { TagConfig } from '@renderer/utils/tagExtraction'
+import { TagExtractor } from '@renderer/utils/tagExtraction'
 
 import type { CompletionsParams, CompletionsResult, GenericChunk } from '../schemas'
 import type { CompletionsContext, CompletionsMiddleware } from '../types'
@@ -34,7 +34,7 @@ const TOOL_USE_TAG_CONFIG: TagConfig = {
  */
 export const ToolUseExtractionMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     const mcpTools = params.mcpTools || []
 
@@ -72,7 +72,6 @@ function createToolUseExtractionTransform(
       try {
         // 处理文本内容，检测工具使用标签
         logger.silly('chunk', chunk)
-
         if (chunk.type === ChunkType.TEXT_DELTA) {
           const textChunk = chunk as TextDeltaChunk
 
@@ -107,7 +106,6 @@ function createToolUseExtractionTransform(
             }
             // tool_use 标签内的内容不转发，避免重复显示
           }
-
           return
         }
 
@@ -122,10 +120,8 @@ function createToolUseExtractionTransform(
     async flush(controller) {
       // 检查是否有未完成的 tool_use 标签内容
       const finalToolUseResult = toolUseExtractor.finalize()
-
       if (finalToolUseResult && finalToolUseResult.tagContentExtracted) {
         const toolUseResponses = parseToolUse(finalToolUseResult.tagContentExtracted, mcpTools, toolCounter)
-
         if (toolUseResponses.length > 0) {
           const mcpToolCreatedChunk: MCPToolCreatedChunk = {
             type: ChunkType.MCP_TOOL_CREATED,

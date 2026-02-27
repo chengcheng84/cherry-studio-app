@@ -1,5 +1,5 @@
-import { AnthropicAPIClient } from '@/aiCore/legacy/clients/anthropic/AnthropicAPIClient'
-import type { AnthropicSdkRawChunk, AnthropicSdkRawOutput } from '@/types/sdk'
+import { AnthropicAPIClient } from '@renderer/aiCore/legacy/clients/anthropic/AnthropicAPIClient'
+import type { AnthropicSdkRawChunk, AnthropicSdkRawOutput } from '@renderer/types/sdk'
 
 import type { AnthropicStreamListener } from '../../clients/types'
 import type { CompletionsParams, CompletionsResult } from '../schemas'
@@ -9,7 +9,7 @@ export const MIDDLEWARE_NAME = 'RawStreamListenerMiddleware'
 
 export const RawStreamListenerMiddleware: CompletionsMiddleware =
   () =>
-  next =>
+  (next) =>
   async (ctx: CompletionsContext, params: CompletionsParams): Promise<CompletionsResult> => {
     const result = await next(ctx, params)
 
@@ -18,7 +18,7 @@ export const RawStreamListenerMiddleware: CompletionsMiddleware =
       // TODO: 后面下放到AnthropicAPIClient
       if (ctx.apiClientInstance instanceof AnthropicAPIClient) {
         const anthropicListener: AnthropicStreamListener<AnthropicSdkRawChunk> = {
-          onMessage: message => {
+          onMessage: (message) => {
             if (ctx._internal?.toolProcessingState) {
               ctx._internal.toolProcessingState.output = message
             }
