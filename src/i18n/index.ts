@@ -29,6 +29,10 @@ export const getLanguage = async () => {
 
   if (!savedLanguage) {
     savedLanguage = Localization.getLocales()[0]?.languageTag
+    // Auto-detect and save language on first launch
+    if (savedLanguage) {
+      storage.set('language', savedLanguage)
+    }
   }
 
   return savedLanguage
