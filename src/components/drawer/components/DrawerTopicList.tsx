@@ -13,6 +13,7 @@ import { drawerContentLayoutTransition, drawerFeatureAreaEntering } from '../uti
 import { DrawerFeatureArea } from './DrawerFeatureArea';
 import { DrawerNewChatButton } from './DrawerNewChatButton';
 import { useDrawerTopicActionDialogs } from './DrawerTopicActionDialogs';
+import { DrawerTopicListSkeleton } from './DrawerTopicListSkeleton';
 
 type DrawerTopicRowProps = {
   isActive: boolean;
@@ -73,23 +74,27 @@ export const DrawerTopicList = memo(function DrawerTopicList() {
     [openTopic, requestDelete, requestRename],
   );
 
-  const listEmptyComponent = useCallback(
-    () => (
+  const listEmptyComponent = useCallback(() => {
+    if (isTopicListLoading) {
+      return <DrawerTopicListSkeleton />;
+    }
+
+    return (
       <View className="items-center justify-center px-6 py-8">
-        {isTopicListLoading ? null : (
-          <Text className="text-center text-default-foreground text-sm">
-            {t('navigation.noMatchingChats')}
-          </Text>
-        )}
+        <Text className="text-center text-default-foreground text-sm">
+          {t('navigation.noMatchingChats')}
+        </Text>
       </View>
-    ),
-    [isTopicListLoading, t],
-  );
+    );
+  }, [isTopicListLoading, t]);
 
   return (
     <View className="flex-1" onLayout={handleLayout}>
       <LegendList
-        contentContainerStyle={{ paddingBottom: newChatButtonClearance, paddingTop: 2 }}
+        contentContainerStyle={{
+          paddingBottom: newChatButtonClearance,
+          paddingTop: 2,
+        }}
         data={topics}
         estimatedItemSize={topicItemHeight}
         extraData={listExtraData}

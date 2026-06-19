@@ -78,8 +78,27 @@ export function DrawerProvider({ children }: PropsWithChildren) {
   const [isOpen, setIsOpen] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [debouncedSearchText, setDebouncedSearchText] = useState('');
   const drawerControllerRef = useRef<DrawerNavigationController | null>(null);
-  const topicList = useTopics({ q: searchText });
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      setDebouncedSearchText(searchText);
+    }, 200);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [searchText]);
+
+  const topicList = useTopics({ q: debouncedSearchText });
 
   // Prefetch the visible drawer topics' messages only after the drawer has been opened. A cold
   // start into the current chat must not contend for the single SQLite connection with up to
