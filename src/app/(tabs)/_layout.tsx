@@ -4,12 +4,11 @@ import {
   type NativeBottomTabNavigationOptions,
 } from '@bottom-tabs/react-navigation';
 import { withLayoutContext } from 'expo-router';
-import { isAndroid } from '@/config/constants';
 import type { ParamListBase, TabNavigationState } from 'expo-router/react-navigation';
 import { useThemeColor } from 'heroui-native/hooks';
 import { useTranslation } from 'react-i18next';
-
 import { BottomTabBarVisibilityProvider, useBottomTabBarHidden } from '@/components/navigation';
+import { isAndroid } from '@/config/constants';
 import {
   SearchScopeProvider,
   useSetSearchScope,
